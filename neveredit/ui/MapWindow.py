@@ -696,6 +696,32 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
         normalized.sort()
         return tuple(normalized)
 
+    def _getCreatureBodyPartContext(self, creature):
+        if not hasattr(creature, 'getBodyPartContext'):
+            return {}
+        try:
+            part_context = creature.getBodyPartContext()
+        except Exception:
+            return {}
+        if not isinstance(part_context, dict):
+            return {}
+        return dict(part_context)
+
+    def _normalizePartSignature(self, part_context):
+        if not part_context:
+            return ()
+        normalized = []
+        for key, value in list(part_context.items()):
+            try:
+                ivalue = int(value)
+            except (TypeError, ValueError):
+                continue
+            if ivalue < 0:
+                continue
+            normalized.append((str(key), ivalue))
+        normalized.sort()
+        return tuple(normalized)
+
     def setStatus(self,status):
         Progressor.setStatus(self,status)
         print(status)
@@ -703,9 +729,14 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
     def preprocess(self):
         if not self.area:
             return
+        preprocess_start = time.perf_counter()
+        phase_start = preprocess_start
         self.makeCurrent()
         self.clearCache()
         self.makeQuadTree()
+        logger.info('preprocess phase makeQuadTree: %.3fs', time.perf_counter() - phase_start)
+
+        phase_start = time.perf_counter()
         self.setStatus("Preparing door display...")
         self.setProgress(10)
         for i,d in enumerate(self.doors):
@@ -716,6 +747,9 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
                     self.preprocessedModels.add(d.modelName)
             else:
                 self._warnMissingModelOnce('door', d.getName())
+        logger.info('preprocess phase doors: %.3fs', time.perf_counter() - phase_start)
+
+        phase_start = time.perf_counter()
         self.setProgress(30)
         self.setStatus("Preparing placeable display...")
         for i,p in enumerate(self.placeables):
@@ -726,6 +760,9 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
                     self.preprocessedModels.add(p.modelName)
             else:
                 self._warnMissingModelOnce('placeable', p.getName())
+        logger.info('preprocess phase placeables: %.3fs', time.perf_counter() - phase_start)
+
+        phase_start = time.perf_counter()
         self.setProgress(50)
         self.setStatus("Preparing creature display...")
         for i,c in enumerate(self.creatures):
@@ -735,7 +772,9 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
 
             tint_context = self._getCreatureTintContext(c)
             tint_signature = self._normalizeTintSignature(tint_context)
-            variant_key = ('creature', c.modelName, tint_signature)
+            part_context = self._getCreatureBodyPartContext(c)
+            part_signature = self._normalizePartSignature(part_context)
+            variant_key = ('creature', c.modelName, tint_signature, part_signature)
 
             model = self.creatureModelVariants.get(variant_key)
             if model is None:
@@ -750,6 +789,10 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
                     model.pltTintContext = dict(tint_signature)
                 elif hasattr(model, 'pltTintContext'):
                     delattr(model, 'pltTintContext')
+                if part_signature:
+                    model.creaturePartContext = dict(part_signature)
+                elif hasattr(model, 'creaturePartContext'):
+                    delattr(model, 'creaturePartContext')
                 self.creatureModelVariants[variant_key] = model
 
             c.model = model
@@ -759,6 +802,9 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
                     self.preprocessedModels.add(variant_key)
             else:
                 pass # I know I'm not handling all model types here yet
+        logger.info('preprocess phase creatures: %.3fs', time.perf_counter() - phase_start)
+
+        phase_start = time.perf_counter()
         self.setProgress(70)
         self.setStatus("Preparing tile display...")
         for i,t in enumerate(self.tiles):
@@ -769,6 +815,9 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
                     self.preprocessedModels.add(t.modelName)
             else:
                 self._warnMissingModelOnce('tile', t.getName())
+        logger.info('preprocess phase tiles: %.3fs', time.perf_counter() - phase_start)
+
+        phase_start = time.perf_counter()
         self.setProgress(90)
         self.setStatus("Preparing waypoint display...")
         for i,w in enumerate(self.waypoints):
@@ -779,8 +828,10 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
                     self.preprocessedModels.add(w.modelName)
             else:
                 self._warnMissingModelOnce('waypoint', w.getName())
+        logger.info('preprocess phase waypoints: %.3fs', time.perf_counter() - phase_start)
         self.setProgress(0)
         self.setStatus("Map display prepared.")
+        logger.info('preprocess total: %.3fs', time.perf_counter() - preprocess_start)
         self.preprocessed = True
         
     def makeQuadTree(self):
@@ -1122,12 +1173,42 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
             self.handleNode(root,
                             selected=(name in self.selected))
             if self.highlight == name:
-                self.renderHighlightBoxOutline(model.boundingBox,
-                                               colour=(0.1,0.1,1.0),
-                                               thickness=2.0)
+                box = self._getHighlightBoundingBox(model, root)
+                if box is not None:
+                    self.renderHighlightBoxOutline(box,
+                                                   colour=(0.1,0.1,1.0),
+                                                   thickness=2.0)
         finally:
             #glPopName()
             glPopMatrix()
+
+    def _isUsableBoundingBox(self, box):
+        if box is None:
+            return False
+        try:
+            mins = box[0]
+            maxs = box[1]
+            for i in range(3):
+                if maxs[i] < mins[i]:
+                    return False
+            return True
+        except Exception:
+            return False
+
+    def _getHighlightBoundingBox(self, model, root):
+        # Prefer live node bounds over model-level bounds for highlight fidelity.
+        if self._isUsableBoundingBox(getattr(root, 'boundingBox', None)):
+            return root.boundingBox
+        if self._isUsableBoundingBox(getattr(model, 'boundingBox', None)):
+            return model.boundingBox
+        try:
+            box = self.calculateNodeTreeBoundingBox(root)
+            if self._isUsableBoundingBox(box):
+                return box
+        except Exception:
+            logger.debug('failed to recompute highlight bounding box',
+                         exc_info=True)
+        return None
 
     def drawTile(self,t,i):
         model = t.getModel()
