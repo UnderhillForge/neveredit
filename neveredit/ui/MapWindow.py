@@ -12,7 +12,7 @@ import sys
 import copy
 import threading
 import math
-from sets import Set
+Set = set
 import time
 import profile
 import copy
@@ -114,9 +114,9 @@ class QuadTreeNode:
         self.contents.append(o)
 
     def __str__(self):
-        return '{xmin:' + `self.xmin` + ' xmax:' + `self.xmax`\
-             + ' ymin:' + `self.ymin` + ' ymax:' + `self.ymax`\
-             + `self.boundingSphere` + '}' # + ' - ' + `self.children` + '}'
+        return '{xmin:' + repr(self.xmin) + ' xmax:' + repr(self.xmax)\
+             + ' ymin:' + repr(self.ymin) + ' ymax:' + repr(self.ymax)\
+             + repr(self.boundingSphere) + '}' # + ' - ' + `self.children` + '}'
 
     def __repr__(self):
         return self.__str__()
@@ -125,7 +125,7 @@ class QuadTreeNode:
         self.printHelper(self, '')
     
     def printHelper(self, node, indent):
-        print indent,`node`
+        print(indent,repr(node))
         for row in node.children:
             for n in row:
                 self.printHelper(n, indent + '  ')
@@ -189,12 +189,14 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
         self.holdZ = 0
         self.lastX = 0
         self.lastY = 0
-	self.Zmax = 0
+        self.Zmax = 0
 
-        wx.EVT_RIGHT_DOWN(self, self.OnRightMouseDown)
+        self.Bind(wx.EVT_RIGHT_DOWN, self.OnRightMouseDown)
 
         neverglobals.getResourceManager().addVisualChangeListener(self)
         self.toPreprocess = None
+        self._missingSelectionWarnings = set()
+        self._missingModelWarnings = set()
         
     def Destroy(self):
         neverglobals.getResourceManager().removeVisualChangeListener(self)
@@ -221,9 +223,9 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
             self.popup = wx.Menu()
             thing = self.getThingHit(self.highlight)
             tag = thing['Tag']
-            location = u'X:%.2f Y:%.2f Z:%.2f' % (thing.getX(),thing.getY(),thing.getZ())
+            location = 'X:%.2f Y:%.2f Z:%.2f' % (thing.getX(),thing.getY(),thing.getZ())
             try:
-                info = u'ID: %d' % thing.getObjectId()
+                info = 'ID: %d' % thing.getObjectId()
             except:
                 info = None
             if not hasattr(self,'COPY_TAG_ID'):
@@ -231,8 +233,8 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
                 self.Bind(wx.EVT_MENU, self.OnCopyTag, id=self.COPY_TAG_ID)        
                 self.LOCATION_ID = wx.NewId()
                 self.INFO_ID = wx.NewId()
-            self.popup.Append(self.COPY_TAG_ID,u'Copy Object Tag "%s" to Clipboard' % tag)
-            self.popup.Append(self.LOCATION_ID,u'Location: ' + location)
+            self.popup.Append(self.COPY_TAG_ID,'Copy Object Tag "%s" to Clipboard' % tag)
+            self.popup.Append(self.LOCATION_ID,'Location: ' + location)
             if info:
                 self.popup.Append(self.INFO_ID,info)
             self.popup.Enable(self.LOCATION_ID,False)
@@ -276,7 +278,8 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
     def OnMouseDown(self, evt):
         if self.preprocessing:
             return
-        self.SetCurrent()
+        self.SetFocus()
+        self.makeCurrent()
         if self.mode == ToolPalette.SELECTION_TOOL or\
            self.mode == ToolPalette.ROTATE_TOOL:
             if self.highlight != None:
@@ -310,7 +313,27 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
         if not self.area or not self.preprocessed or\
                self.preprocessing:
             return
-        self.SetCurrent()
+        self.makeCurrent()
+        currentX = evt.GetX()
+        currentY = self.height - evt.GetY()
+
+        # Camera controls independent of object edit tools:
+        # - Right drag: orbit camera angles.
+        # - Middle drag (or Shift+Right drag): pan in world plane.
+        if evt.Dragging() and not self.beingDragged:
+            dx = float(currentX - self.lastX)
+            dy = float(currentY - self.lastY)
+            if evt.MiddleIsDown() or (evt.RightIsDown() and evt.ShiftDown()):
+                self.adjustPos(dy * 0.08, -dx * 0.08)
+                self.lastX = currentX
+                self.lastY = currentY
+                return
+            if evt.RightIsDown():
+                self.adjustViewAngle(-dx * 0.35, -dy * 0.25)
+                self.lastX = currentX
+                self.lastY = currentY
+                return
+
         if self.mode == ToolPalette.SELECTION_TOOL or\
            self.mode == ToolPalette.ROTATE_TOOL and\
            not self.beingDragged:
@@ -318,7 +341,7 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
                                       float(self.height-evt.GetY()))            
             x,y = self.rayPointOnBasePlane(ray)
             contents = self.getContentsForPoint(x,y)['things']
-            closestIntersect = sys.maxint
+            closestIntersect = sys.maxsize
             toHighlight = -1
             for thing,id in contents:
                 if thing.getModel():
@@ -344,54 +367,55 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
                     self.requestRedraw()
         if self.mode == ToolPalette.SELECTION_TOOL and\
            self.beingDragged:
-	    # TODO: remove this and make Z manipulation automatic.
-	    if self.holdZ == 1:
-		    dragX = float(evt.GetX() - self.dragOffset[0])
-		    dragY = float(self.height-evt.GetY() - self.dragOffset[1])
-                    oldX = self.beingDragged.getX()
-		    x = oldX
-		    oldY = self.beingDragged.getY()
-		    y = oldY
-	            oldZ = self.beingDragged.getZ()
-		    lastY = self.lastY - self.dragOffset[1]
-		    
-		    if dragY > lastY:
-                       z = oldZ + 0.1
-		    elif  dragY < lastY:
-		       z = oldZ - 0.1
-		    else:
-		       z = oldZ
-		
-		    if z <= 0.0: #prevents the model from going below the map
-		       z = 0.0
-		    if z > 25.0:  #according to the 'ARE' documentation, tile height is only 5 levels and it seems that they are multiples of 5 in the coordinate system.  5 * 5 is 25.  This is how far we go up.
-		       z = 25.0
-		    self.updateZmax(z) # We update the maximum Z-component so that we can effectively do two plane points for the mouse.
-		
-	    else:
-		    dragX = float(evt.GetX() - self.dragOffset[0])
-		    dragY = float(self.height-evt.GetY() - self.dragOffset[1])
-		    x,y = self.mouseToPointOnBasePlane(dragX,dragY)
-		    oldX = self.beingDragged.getX()
-		    oldY = self.beingDragged.getY()
-	            oldZ = self.beingDragged.getZ()
-		    z = oldZ
+            # TODO: remove this and make Z manipulation automatic.
+            if self.holdZ == 1:
+                dragX = float(evt.GetX() - self.dragOffset[0])
+                dragY = float(self.height-evt.GetY() - self.dragOffset[1])
+                oldX = self.beingDragged.getX()
+                x = oldX
+                oldY = self.beingDragged.getY()
+                y = oldY
+                oldZ = self.beingDragged.getZ()
+                lastY = self.lastY - self.dragOffset[1]
 
-            if (int(oldX)/10 != int(x)/10) or (int(oldY)/10 != int(y)/10):
-                oldContents = self.getContentsForPoint(oldX,oldY)
-                newContents = self.getContentsForPoint(x,y)
-                try:
-                    index = [t[0] for t in oldContents['things']]\
-                            .index(self.beingDragged)
-                    newContents['things'].append(oldContents['things'][index])
-                    oldContents['things'].remove(oldContents['things'][index])
-                except ValueError:
-                    newContents['things'].append((self.beingDragged,
-                                                  self.fullThingList\
-                                                  .index(self.beingDragged)))
-            self.beingDragged.setX(x)
-            self.beingDragged.setY(y)
-	    self.beingDragged.setZ(z)
+                if dragY > lastY:
+                    z = oldZ + 0.1
+                elif dragY < lastY:
+                    z = oldZ - 0.1
+                else:
+                    z = oldZ
+
+                if z <= 0.0: #prevents the model from going below the map
+                    z = 0.0
+                if z > 25.0:  #according to the 'ARE' documentation, tile height is only 5 levels and it seems that they are multiples of 5 in the coordinate system.  5 * 5 is 25.  This is how far we go up.
+                    z = 25.0
+                self.updateZmax(z) # We update the maximum Z-component so that we can effectively do two plane points for the mouse.
+
+            else:
+                dragX = float(evt.GetX() - self.dragOffset[0])
+                dragY = float(self.height-evt.GetY() - self.dragOffset[1])
+                x,y = self.mouseToPointOnBasePlane(dragX,dragY)
+                oldX = self.beingDragged.getX()
+                oldY = self.beingDragged.getY()
+                oldZ = self.beingDragged.getZ()
+                z = oldZ
+
+                if (int(oldX)/10 != int(x)/10) or (int(oldY)/10 != int(y)/10):
+                    oldContents = self.getContentsForPoint(oldX,oldY)
+                    newContents = self.getContentsForPoint(x,y)
+                    try:
+                        index = [t[0] for t in oldContents['things']]\
+                                .index(self.beingDragged)
+                        newContents['things'].append(oldContents['things'][index])
+                        oldContents['things'].remove(oldContents['things'][index])
+                    except ValueError:
+                        newContents['things'].append((self.beingDragged,
+                                                      self.fullThingList\
+                                                      .index(self.beingDragged)))
+                self.beingDragged.setX(x)
+                self.beingDragged.setY(y)
+
+            self.beingDragged.setZ(z)
             event = MoveEvent(self.GetId(),
                               self.beingDragged.getNevereditId(),
                               x,y,
@@ -423,17 +447,17 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
             self.beingPainted.setY(y)
             self.requestRedraw()
             
-        self.lastX = evt.GetX()
-        self.lastY = self.height - evt.GetY()
+        self.lastX = currentX
+        self.lastY = currentY
 
     def OnKeyUp(self,evt):
-	self.holdZ = 0
+        self.holdZ = 0
 
     def OnKeyDown(self,evt):
         global Numeric
         GLWindow.OnKeyDown(self,evt)        
-	if evt.GetKeyCode() == 308: #ctrl
-		self.holdZ = 1
+        if evt.GetKeyCode() == 308: #ctrl
+            self.holdZ = 1
         # if evt.GetKeyCode() == wx.WXK_SPACE:
 #             self.SetCurrent()
 #             print 'profiling to draw.prof'
@@ -469,7 +493,16 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
                     self.requestRedraw()
                 didSelect = True
         if not didSelect:
-            logger.warning(__name__+' cannot find thing with id %i' % id)
+            if id not in self._missingSelectionWarnings:
+                self._missingSelectionWarnings.add(id)
+                logger.debug(__name__+' cannot find thing with id %i' % id)
+
+    def _warnMissingModelOnce(self, category, name):
+        key = (category, name)
+        if key in self._missingModelWarnings:
+            return
+        self._missingModelWarnings.add(key)
+        logger.warning('no model for %s (%s)' % (name, category))
 
     def lookAt(self,x,y):
         self.lookingAtX = x
@@ -493,10 +526,8 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
         self.requestRedraw()
 
     def checkRaySphereIntersection(self,ray,sphere):
-        direction = Numeric.array(ray[1],copy=False)-Numeric.array(ray[2],
-                                                                   copy=False)
-        diff = Numeric.array(ray[1],copy=False)-Numeric.array(sphere[0],
-                                                              copy=False)
+        direction = Numeric.array(ray[1]) - Numeric.array(ray[2])
+        diff = Numeric.array(ray[1]) - Numeric.array(sphere[0])
         a = Numeric.dot(direction,direction)
         b = 2.0*Numeric.dot(direction,diff)
         c = Numeric.dot(diff,diff) - sphere[1] ** 2
@@ -513,18 +544,21 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
 
     def rayFromMouse(self,x,y):
         glPushMatrix()
-        self.setupCamera()
-        near = Numeric.array(self.unproject(x,y,0.0))
-        far = Numeric.array(self.unproject(x,y,1.0))
-        glPopMatrix()
+        try:
+            self.setupCamera()
+            near = Numeric.array(self.unproject(x,y,0.0))
+            far = Numeric.array(self.unproject(x,y,1.0))
+        finally:
+            # Always balance matrix stack even if unproject/setup fails.
+            glPopMatrix()
         return near,far
     
     def rayToPlane(self,x,y,plane):
-	near,far = self.rayFromMouse(x,y)
-	N = Numeric.array([0.0,0.0,1.0]) # normal
-	P = Numeric.array(plane) # plane must be of values e.g. [1.0,1.0,0.0]
-	u = Numeric.dot(N,P-near)/Numeric.dot(N,far-near)
-	return u,near,far
+        near,far = self.rayFromMouse(x,y)
+        N = Numeric.array([0.0,0.0,1.0]) # normal
+        P = Numeric.array(plane) # plane must be of values e.g. [1.0,1.0,0.0]
+        u = Numeric.dot(N,P-near)/Numeric.dot(N,far-near)
+        return u,near,far
     
     def rayToBasePlane(self,x,y):        
         near,far = self.rayFromMouse(x,y)
@@ -534,20 +568,20 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
         return u,near,far
 
     def mouseToPointonMaxZPlane(self,x,y):
-	Zmax = self.Zmax
-	P = Numeric.array([1.0,1.0,Zmax])
-	ray = self.rayToPlane(x,y,P)
-	return self.rayPointOnPlane(ray,P)
+        Zmax = self.Zmax
+        P = Numeric.array([1.0,1.0,Zmax])
+        ray = self.rayToPlane(x,y,P)
+        return self.rayPointOnPlane(ray,P)
 
     def rayPointOnPlane(self,ray,plane):        
-	#FIXME: STUB
-	
+        #FIXME: STUB
+    
         #u,near,far = ray
         #intersect = near + u * (far-near)
         #px = intersect[0]
         #py = intersect[1]
         #if px < 0:
-	#    px = 0
+        #    px = 0
         #if px > self.area.getWidth()*10.0:
         #    px = self.area.getWidth()*10.0
         #if py < 0:
@@ -555,7 +589,7 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
         #if py > self.area.getHeight()*10.0:
         #    py = self.area.getHeight()*10.0                
         #return px,py
-	return
+        return
 
     def mouseToPointOnBasePlane(self,x,y):
         ray = self.rayToBasePlane(x,y)
@@ -577,44 +611,43 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
         return px,py
 
     def getContentsForPointSimplifiedHelper(self,x,y,node):
-	#track the max Z.  We will have a range of values interval (Zmax and Baseplane)
-	#if the value of the creature falls inbetween the point from Zmax and Baseplane)
-	#we pass to the sphere intersection test.
-	
-	#we will return it if it aligns with xmin,xmax or ymin,ymax
-	if not node.children:
+        #track the max Z.  We will have a range of values interval (Zmax and Baseplane)
+        #if the value of the creature falls inbetween the point from Zmax and Baseplane)
+        #we pass to the sphere intersection test.
+
+        #we will return it if it aligns with xmin,xmax or ymin,ymax
+        if not node.children:
             return node.contents
         else:
             for row in node.children:
                 for c in row:
-                    if (x >= c.xmin and x <= c.xmax) or\
+                    if (x >= c.xmin and x <= c.xmax) and \
                        (y >= c.ymin and y <= c.ymax):
                         return self.getContentsForPointSimplifiedHelper(x,y,c)
             return node.contents
 
     def updateZmax(self,newZ):
-	# We will iterate through the quadtree looking for the object with the maximum Z component.
-	return self.updateZmaxHelper(newZ,self.quadTreeRoot)
-		
+        # We will iterate through the quadtree looking for the object with the maximum Z component.
+        return self.updateZmaxHelper(newZ,self.quadTreeRoot)
+        
     def updateZmaxHelper(self,newZ,node):
-	if not node.children:
-	    if newZ > 0:
-		print "new Zmax defaults to ",value		    
-		self.Zmax = newZ
-        else:
-	    value = newZ
-            for row in node.children:
-                for c in row:
-		    if not c.children:
-			#we will iterate through contents and get the biggest Z value.
-			contents_thing = c.contents['things']
-			for thing,id in contents_thing:
-				if thing.getModel():
-					testZ = thing.getZ()
-					if testZ > value:
-						value = testZ
-	    print "new Zmax is ",value
-	    self.Zmax = value
+        if not node.children:
+            if newZ > 0:
+                self.Zmax = newZ
+            return self.Zmax
+        value = newZ
+        for row in node.children:
+            for c in row:
+                if not c.children:
+                    # Iterate through contents and get the biggest Z value.
+                    contents_thing = c.contents['things']
+                    for thing,id in contents_thing:
+                        if thing.getModel():
+                            testZ = thing.getZ()
+                            if testZ > value:
+                                value = testZ
+        self.Zmax = value
+        return self.Zmax
 
     
     def getContentsForPoint(self,x,y):
@@ -634,62 +667,118 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
     def clearCache(self):
         GLWindow.clearCache(self)
         self.preprocessedModels = Set()
+        self.creatureModelVariants = {}
+        self._missingModelWarnings = set()
+
+    def _getCreatureTintContext(self, creature):
+        if not hasattr(creature, 'getPLTTintContext'):
+            return {}
+        try:
+            tint_context = creature.getPLTTintContext()
+        except Exception:
+            return {}
+        if not isinstance(tint_context, dict):
+            return {}
+        return dict(tint_context)
+
+    def _normalizeTintSignature(self, tint_context):
+        if not tint_context:
+            return ()
+        normalized = []
+        for key, value in list(tint_context.items()):
+            try:
+                ivalue = int(value)
+            except (TypeError, ValueError):
+                continue
+            if ivalue < 0:
+                continue
+            normalized.append((str(key), ivalue))
+        normalized.sort()
+        return tuple(normalized)
 
     def setStatus(self,status):
         Progressor.setStatus(self,status)
-        print status
+        print(status)
     
     def preprocess(self):
         if not self.area:
             return
-        self.SetCurrent()
+        self.makeCurrent()
         self.clearCache()
         self.makeQuadTree()
         self.setStatus("Preparing door display...")
         self.setProgress(10)
         for i,d in enumerate(self.doors):
-            if d.getModel():
-                if not d.modelName in self.preprocessedModels:
-                    self.preprocessNodes(d.getModel(),'d'+`i`,bbox=True)
+            model = d.getModel()
+            if model:
+                if d.modelName not in self.preprocessedModels:
+                    self.preprocessNodes(model,'d'+repr(i),bbox=True)
                     self.preprocessedModels.add(d.modelName)
             else:
-                logger.warning('no model for %s' % d.getName())
+                self._warnMissingModelOnce('door', d.getName())
         self.setProgress(30)
         self.setStatus("Preparing placeable display...")
         for i,p in enumerate(self.placeables):
-            if p.getModel():
-                if not p.modelName in self.preprocessedModels:
-                    self.preprocessNodes(p.getModel(),'p'+`i`,bbox=True)
+            model = p.getModel()
+            if model:
+                if p.modelName not in self.preprocessedModels:
+                    self.preprocessNodes(model,'p'+repr(i),bbox=True)
                     self.preprocessedModels.add(p.modelName)
             else:
-                logger.warning('no model for %s' % p.getName())
+                self._warnMissingModelOnce('placeable', p.getName())
         self.setProgress(50)
         self.setStatus("Preparing creature display...")
         for i,c in enumerate(self.creatures):
-            if c.getModel():
-                if not c.modelName in self.preprocessedModels:
-                    self.preprocessNodes(c.getModel(),'c'+`i`,bbox=True)
-                    self.preprocessedModels.add(c.modelName)                
+            base_model = c.getModel()
+            if not base_model:
+                continue
+
+            tint_context = self._getCreatureTintContext(c)
+            tint_signature = self._normalizeTintSignature(tint_context)
+            variant_key = ('creature', c.modelName, tint_signature)
+
+            model = self.creatureModelVariants.get(variant_key)
+            if model is None:
+                if tint_signature:
+                    model = c.getModel(copy=True)
+                else:
+                    model = base_model
+                if not model:
+                    continue
+
+                if tint_signature:
+                    model.pltTintContext = dict(tint_signature)
+                elif hasattr(model, 'pltTintContext'):
+                    delattr(model, 'pltTintContext')
+                self.creatureModelVariants[variant_key] = model
+
+            c.model = model
+            if model:
+                if variant_key not in self.preprocessedModels:
+                    self.preprocessNodes(model,'c'+repr(i),bbox=True)
+                    self.preprocessedModels.add(variant_key)
             else:
                 pass # I know I'm not handling all model types here yet
         self.setProgress(70)
         self.setStatus("Preparing tile display...")
         for i,t in enumerate(self.tiles):
-            if t.getModel():
-                if not t.modelName in self.preprocessedModels:
-                    self.preprocessNodes(t.getModel(),'t'+`i`,bbox=True)
-                    self.preprocessedModels.add(t.modelName)                
+            model = t.getModel()
+            if model:
+                if t.modelName not in self.preprocessedModels:
+                    self.preprocessNodes(model,'t'+repr(i),bbox=True)
+                    self.preprocessedModels.add(t.modelName)
             else:
-                logger.warning('no model for %s' % t.getName())
+                self._warnMissingModelOnce('tile', t.getName())
         self.setProgress(90)
         self.setStatus("Preparing waypoint display...")
         for i,w in enumerate(self.waypoints):
-            if w.getModel():
-                if not w.modelName in self.preprocessedModels:
-                    self.preprocessNodes(w.getModel(),'w'+`i`,bbox=True)
+            model = w.getModel()
+            if model:
+                if w.modelName not in self.preprocessedModels:
+                    self.preprocessNodes(model,'w'+repr(i),bbox=True)
                     self.preprocessedModels.add(w.modelName)
             else:
-                logger.warning('no model for %s ' % w.getName())
+                self._warnMissingModelOnce('waypoint', w.getName())
         self.setProgress(0)
         self.setStatus("Map display prepared.")
         self.preprocessed = True
@@ -723,7 +812,7 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
             self.thingMap[y][x]['things'].append((thing,i))
         for i,tile in enumerate(self.tiles):
             x = i % self.area.getWidth()
-            y = i / self.area.getWidth()
+            y = i // self.area.getWidth()
             self.thingMap[y][x]['tiles'].append((tile,i))
 
         self.makeQuadTreeHelper(self.quadTreeRoot,0,0,
@@ -754,7 +843,7 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
         fymax = 10.0*float(ymax)
         
         if w > 1:
-            c1w = w/2
+            c1w = w // 2
             c2w = w-c1w
             for l in node.children:
                 l[0].boundingSphere[0][0] = fxmin + 5.0 * float(c1w)
@@ -764,8 +853,8 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
             for l in node.children:
                 l[0].boundingSphere[0][0] = fxmin + cw
         if h > 1:
-            c1h = h/2
-            c2h = h-h/2
+            c1h = h // 2
+            c2h = h-c1h
             for l in node.children[0]:
                 l.boundingSphere[0][1] = fymin + 5.0 * float(c1h)
             for l in node.children[1]:
@@ -776,12 +865,12 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
                 l.boundingSphere[0][1] = fymin + ch
 
         if w > 1:
-            c1w = w/2
+            c1w = w // 2
             c2w = w-c1w
             wsplit = xmin + c1w
             if h > 1:
-                c1h = h/2
-                c2h = h-h/2
+                c1h = h // 2
+                c2h = h-c1h
                 hsplit = ymin + c1h
                 r = math.sqrt((5.0*float(c1w)) ** 2 + (5.0*float(c1h)) ** 2)
                 node.children[0][0].boundingSphere[1] = r
@@ -834,8 +923,8 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
                                         xmax,ymax)
         else:
             if h > 1:
-                c1h = h/2
-                c2h = h-h/2
+                c1h = h // 2
+                c2h = h-c1h
                 hsplit = ymin + c1h
                 r = math.sqrt(25.0 + (5.0*float(c1h)) ** 2)
                 node.children[0][0].boundingSphere[1] = r
@@ -925,7 +1014,7 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
 
     def removePlayer(self,pid):
         self.lock.acquire()
-        print 'removing player',pid
+        print('removing player',pid)
         del self.players[pid]
         self.lock.release()
         self.requestRedraw()
@@ -956,22 +1045,28 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
         if not b.maxLine:
             return
         glPushMatrix()
-        self.glColorf(b.bgcolour)
-        glTranslatef(b.x+5,b.y+5,0)
-        w = sum([glutBitmapWidth(GLUT_BITMAP_TIMES_ROMAN_10,ord(c)) for c in b.maxLine])
-        # w = glutBitmapLength(GLUT_BITMAP_TIMES_ROMAN_10,b.maxLine)             
-        rectWidth = w + 7
-        rectHeight = 12*b.textHeight + 8
-        self.drawRoundedRect(rectWidth + 5,rectHeight)
-        glDisable(GL_BLEND)
-        for i,line in enumerate(b.text):
-            height = b.y + (rectHeight - i*12) - 7
-            glColor4f(0,0,0,1)
-            self.output_text(b.x+15,height,line)
-            self.glColorf(b.fgcolour)
-            self.output_text(b.x+14,height+1,line)
-        glEnable(GL_BLEND)
-        glPopMatrix()
+        try:
+            self.glColorf(b.bgcolour)
+            glTranslatef(b.x+5,b.y+5,0)
+            if 'glutBitmapWidth' in globals() and bool(glutBitmapWidth):
+                w = sum([glutBitmapWidth(GLUT_BITMAP_TIMES_ROMAN_10,ord(c)) for c in b.maxLine])
+            else:
+                # Approximate width for systems without usable GLUT bitmap APIs.
+                w = 7 * len(b.maxLine)
+            # w = glutBitmapLength(GLUT_BITMAP_TIMES_ROMAN_10,b.maxLine)
+            rectWidth = w + 7
+            rectHeight = 12*b.textHeight + 8
+            self.drawRoundedRect(rectWidth + 5,rectHeight)
+            glDisable(GL_BLEND)
+            for i,line in enumerate(b.text):
+                height = b.y + (rectHeight - i*12) - 7
+                glColor4f(0,0,0,1)
+                self.output_text(b.x+15,height,line)
+                self.glColorf(b.fgcolour)
+                self.output_text(b.x+14,height+1,line)
+            glEnable(GL_BLEND)
+        finally:
+            glPopMatrix()
         
     def drawOverlays(self):
         glDisable(GL_LIGHTING)
@@ -979,65 +1074,80 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
         glDisable(GL_DEPTH_TEST)
         glMatrixMode(GL_PROJECTION)
         glPushMatrix()
-        glLoadIdentity()
-        gluOrtho2D(0,self.width,0,self.height)
-        glMatrixMode(GL_MODELVIEW)
-        glPushMatrix()
-        glLoadIdentity()
-        if self.showFPS:
-            glColor3f(1,1,1)
-            self.output_text(15,15,'fps: %.2f' % self.fps)
-        for b in self.textBoxes.values():
-            self.drawTextBox(b)
-        if self.highlight != None:
-            b = self.highlightBox
-            self.drawTextBox(b)
-        glPopMatrix()
-        glMatrixMode(GL_PROJECTION)
-        glPopMatrix()
-        glMatrixMode(GL_MODELVIEW)
+        try:
+            glLoadIdentity()
+            gluOrtho2D(0,self.width,0,self.height)
+            glMatrixMode(GL_MODELVIEW)
+            glPushMatrix()
+            try:
+                glLoadIdentity()
+                if self.showFPS:
+                    glColor3f(1,1,1)
+                    self.output_text(15,15,'fps: %.2f' % self.fps)
+                for b in list(self.textBoxes.values()):
+                    self.drawTextBox(b)
+                if self.highlight != None:
+                    b = self.highlightBox
+                    self.drawTextBox(b)
+            finally:
+                glPopMatrix()
+                glMatrixMode(GL_PROJECTION)
+        finally:
+            glPopMatrix()
+            glMatrixMode(GL_MODELVIEW)
 
         glEnable(GL_LIGHTING)
         glEnable(GL_TEXTURE_2D)
         glEnable(GL_DEPTH_TEST)
 
     def drawThing(self,thing,name):
-        if not thing.getModel():
+        model = thing.getModel()
+        if not model:
+            return
+        root = model.getRootNode()
+        if root is None:
             return
         glPushMatrix()
-        glTranslatef(thing.getX(),thing.getY(),thing.getZ())
-        if self.highlight == name:
-            (self.highlightBox.x,
-             self.highlightBox.y,
-             self.highlightBox.z) = self.project(0,0,0)
-        if thing.getObjectId() in self.textBoxes:
-            box = self.textBoxes[thing.getObjectId()]
-            (box.x,box.y,box.z) = self.project(0,0,0)
-        glRotatef(thing.getBearing() * 180/math.pi,0,0,1)
-        #glPushName(name)
-        self.handleNode(thing.getModel().getRootNode(),
-                        selected=(name in self.selected))
-        if self.highlight == name:
-            self.renderHighlightBoxOutline(thing.getModel().boundingBox,
-                                           colour=(0.1,0.1,1.0),
-                                           thickness=2.0)
-        
-        #glPopName()
-        glPopMatrix()
+        try:
+            glTranslatef(thing.getX(),thing.getY(),thing.getZ())
+            if self.highlight == name:
+                (self.highlightBox.x,
+                 self.highlightBox.y,
+                 self.highlightBox.z) = self.project(0,0,0)
+            if thing.getObjectId() in self.textBoxes:
+                box = self.textBoxes[thing.getObjectId()]
+                (box.x,box.y,box.z) = self.project(0,0,0)
+            glRotatef(thing.getBearing() * 180/math.pi,0,0,1)
+            #glPushName(name)
+            self.handleNode(root,
+                            selected=(name in self.selected))
+            if self.highlight == name:
+                self.renderHighlightBoxOutline(model.boundingBox,
+                                               colour=(0.1,0.1,1.0),
+                                               thickness=2.0)
+        finally:
+            #glPopName()
+            glPopMatrix()
 
     def drawTile(self,t,i):
-        if not t.getModel():
+        model = t.getModel()
+        if not model:
+            return
+        root = model.getRootNode()
+        if root is None:
             return
         x = i % self.area.getWidth()
-        y = i / self.area.getWidth()
+        y = i // self.area.getWidth()
         tx = x*10.0+5.0
         ty = y*10.0+5.0
-	h = t.getTileHeight()
+        h = t.getTileHeight()
         glPushMatrix()
-        glTranslatef(tx,ty,h*5) 
-        glRotatef(t.getBearing(),0,0,1)
-        self.handleNode(t.getModel().getRootNode())
-        glPopMatrix()
+        try:
+            glTranslatef(tx,ty,h*5)
+            glRotatef(t.getBearing(),0,0,1)
+            self.handleNode(root)
+        finally:
+            glPopMatrix()
 
     def drawThings(self,things):
         for t in things['tiles']:
@@ -1048,25 +1158,28 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
     def drawTree(self):
         #self.vCheckCount = 0
         self.cacheModelView()
-        self.drawTreeHelper(self.quadTreeRoot)
+        if not self.quadTreeRoot:
+            self.clearModelView()
+            return
+        # Frustum tests occasionally misfire during rapid camera/view changes.
+        # If the root sphere appears invisible, draw without culling this frame
+        # to avoid temporary black frames.
+        useFrustumCull = self.isSphereVisible(self.quadTreeRoot.boundingSphere)
+        self.drawTreeHelper(self.quadTreeRoot,useFrustumCull)
         self.clearModelView()
         #print self.vCheckCount,'visibility checks for',\
         #      len(self.doors + self.placeables + self.creatures + self.tiles),\
         #      'things'
         
-    def drawTreeHelper(self,node):
-        glPushMatrix()
+    def drawTreeHelper(self,node,useFrustumCull=True):
         #self.vCheckCount += 1
-        if self.isSphereVisible(node.boundingSphere):
-            glPopMatrix()
+        if (not useFrustumCull) or self.isSphereVisible(node.boundingSphere):
             if len(node.children) > 0:
                 for halves in node.children:
                     for c in halves:
-                        self.drawTreeHelper(c)
+                        self.drawTreeHelper(c,useFrustumCull)
             else:
                 self.drawThings(node.contents)
-        else:
-            glPopMatrix()
         
         
     # The main drawing function. 
@@ -1078,7 +1191,7 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
             self.toPreprocess = None
         if not self.preprocessed:
             return
-        cl = time.clock()
+        cl = time.perf_counter()
         try:
             # Clear The Screen And The Depth Buffer
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
@@ -1104,7 +1217,7 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
             if self.beingPainted:
                 self.drawThing(self.beingPainted,len(self.fullThingList))
                 
-            for p in self.players.values():
+            for p in list(self.players.values()):
                 self.lock.acquire()
                 x = p.x
                 y = p.y
@@ -1122,10 +1235,10 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
             self.SwapBuffers()
             
         except KeyboardInterrupt:
-            print 'shutting down'
+            print('shutting down')
             sys.exit()
         if self.showFPS:
-            d = time.clock()-cl
+            d = time.perf_counter()-cl
             if d:
                 self.fps = 1.0/d
         
@@ -1157,7 +1270,7 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print 'usage: ' + sys.argv[0] + ' <modfile>'
+        print('usage: ' + sys.argv[0] + ' <modfile>')
         sys.exit(1)
 
     #w = MapWindow.get_standalone()

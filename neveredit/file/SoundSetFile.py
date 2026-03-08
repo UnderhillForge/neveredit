@@ -21,7 +21,7 @@ class SoundSetFile(NeverFile):
         # returns the data as a [ResRef, StringRef] couple at position index
         # note that index starts from 1
 
-        if index in self.dataCache.keys():
+        if index in list(self.dataCache.keys()):
             return self.dataCache[index]
         else:
             # search for data ofset by looking in the Entry Table

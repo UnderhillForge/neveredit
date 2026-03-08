@@ -472,7 +472,7 @@ def filterFile(filename, out=sys.stdout):
             dump(filename)
 
         sys.stderr.write("OK\n")
-    except IOError,e:
+    except IOError as e:
         sys.stderr.write(e[1]+"\n")
 
 
@@ -537,7 +537,7 @@ def convert(srcpath, destpath):
 
         destfile = os.path.join(destpath,basename)
         if destfile==srcfile:
-            print "WARNING: Input and output names are identical!"
+            print("WARNING: Input and output names are identical!")
             sys.exit(1)
 
         count+=1
@@ -557,12 +557,12 @@ def convert(srcpath, destpath):
             try:
                 shutil.rmtree(dname)
             except:
-                print "Can't remove obsolete directory '%s'"%dname
+                print("Can't remove obsolete directory '%s'"%dname)
         else:
             try:
                 os.remove(dname)
             except:
-                print "Can't remove obsolete file '%s'"%dname
+                print("Can't remove obsolete file '%s'"%dname)
 
     return count
 
@@ -575,8 +575,8 @@ filter_file = False
 
 try:
     opts, args = getopt.getopt(sys.argv[1:], "hf", ["help"])
-except getopt.GetoptError,e:
-    print e
+except getopt.GetoptError as e:
+    print(e)
     sys.exit(1)
 
 for o,a in opts:
@@ -594,7 +594,7 @@ else:
         sys.exit(1)
 
     # Filter an entire Python source tree
-    print '"%s" -> "%s"\n'%(args[0],args[1])
+    print('"%s" -> "%s"\n'%(args[0],args[1]))
     c=convert(args[0],args[1])
-    print "%d files"%(c)
+    print("%d files"%(c))
 

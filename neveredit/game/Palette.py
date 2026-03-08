@@ -1,5 +1,3 @@
-import string
-
 from neveredit.util import neverglobals
 from neveredit.game.NeverData import NeverData
 from neveredit.game.Door import DoorBP
@@ -69,10 +67,14 @@ class TreeNode:
             return None
         if self.blueprint:
             return self.blueprint
-        if self.bptype != 'Store':
-            resname = string.join([self.resref.strip('\0'),'.UT',self.bptype[0]],'')
+        if isinstance(self.resref, bytes):
+            resref = self.resref.rstrip(b'\0').decode('latin1', 'ignore')
         else:
-            resname = string.join([self.resref.strip('\0'),'.UTM'],'')
+            resref = str(self.resref).strip('\0')
+        if self.bptype != 'Store':
+            resname = resref + '.UT' + self.bptype[0]
+        else:
+            resname = resref + '.UTM'
         gffroot = neverglobals.getResourceManager()\
                   .getResourceByName(resname).getRoot()
         if self.bptype == 'Creature':
@@ -106,12 +108,12 @@ class TreeNode:
         return extension
     
     def printTree(self,indent):
-        print indent + `self`
+        print(indent + repr(self))
         for c in self.children:
             c.printTree(indent + '  ')
             
     def __str__(self):
-        return string.join([self.name,`self.resref`,self.bptype])
+        return ' '.join([str(self.name), repr(self.resref), self.bptype])
 
     def __repr__(self):
         return self.__str__()

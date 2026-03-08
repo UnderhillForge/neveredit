@@ -1,9 +1,9 @@
 '''Simple utility functions that should really be in a C module'''
 from math import *
 from numarray import *
-import vectorutilities
+from . import vectorutilities
 
-def rotMatrix( (x,y,z,a) ):
+def rotMatrix(rotation):
         """Given rotation as x,y,z,a (a in radians), return rotation matrix
 
         Returns a 4x4 rotation matrix for the given rotation,
@@ -11,6 +11,7 @@ def rotMatrix( (x,y,z,a) ):
         
         x,y,z should be a unit vector.
         """
+        (x,y,z,a) = rotation
         c = cos( a )
         s = sin( a )
         t = 1-c
@@ -42,8 +43,9 @@ def pointNormal2Plane( point, normal ):
         result[3] = - dot(normal, point)
         return result
 
-def plane2PointNormal( (a,b,c,d) ):
+def plane2PointNormal(plane):
         """Get a point and normal from a plane equation"""
+        (a,b,c,d) = plane
         return asarray((-d*a,-d*b,-d*c),'d'), asarray((a,b,c),'d')
 
 if __name__ == "__main__":
@@ -53,10 +55,10 @@ if __name__ == "__main__":
                 ([0,0,1], [0,0,1]),
         ]:
                 plane = pointNormal2Plane(p,n)
-                print 'plane', plane
+                print('plane', plane)
                 p1,n1 = plane2PointNormal(plane)
-                print 'p', p, p1
-                print 'n', n, n1
+                print('p', p, p1)
+                print('n', n, n1)
                 assert allclose( p, p1)
                 assert allclose(n, n1)
         

@@ -22,6 +22,10 @@ class CExoLocString:
         index = langID * 2 + gender
         if index in self.locStrings:
             return (self.locStrings[index],index)
+        elif self.locStrings:
+            # Fallback to first embedded localized value if requested lang/gender is absent.
+            first_key = sorted(self.locStrings.keys())[0]
+            return (self.locStrings[first_key], first_key)
         elif self.strref != -1:
             if not neverglobals.getResourceManager():
                 logger.error('no resource manager in CExoLocString')
@@ -31,8 +35,8 @@ class CExoLocString:
                 if s != None:
                     return (s,-1)
                 else:
-                    logger.error('error, Invalid Strref in CExoLocString')
-                    return ('',-1)
+                    logger.debug('invalid strref in CExoLocString: %r', self.strref)
+                    return ('StrRef %d' % self.strref,-1)
         else:
             #print string.join (['error, no string for language',
             #                    `index`,
@@ -59,8 +63,8 @@ class CExoLocString:
         
     def toGFFEntry(self):
         return (self.strref,
-                zip(self.locStrings.keys(),
-                    self.locStrings.values()))
+                list(zip(list(self.locStrings.keys()),
+                    list(self.locStrings.values()))))
 
     def __str__(self):
         return self.getString()

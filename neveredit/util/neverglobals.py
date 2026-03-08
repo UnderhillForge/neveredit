@@ -23,7 +23,7 @@ def getResourceManager():
             return resourceManager
         else:
             logging.getLogger().critical("No NWN App Dir specifid in prefs.")
-            raise RuntimeError,"No App Dir"
+            raise RuntimeError("No App Dir")
     else:
         return resourceManager
 

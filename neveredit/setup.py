@@ -11,7 +11,7 @@ import sys,os,shutil
 try:
     import py2app
 except:
-    print 'py2app not present'
+    print('py2app not present')
     pass #of course, this will now fail when 'py2app' is given as an arg
 
 import __init__
@@ -104,7 +104,7 @@ def main():
                 if os.path.split(path)[-1] == r[0] and\
                    f == r[1] or\
                    f.endswith('.cached'):
-                    print 'removing',os.path.join(path,f)
+                    print('removing',os.path.join(path,f))
                     os.remove(os.path.join(path,f))                    
                     break
         for f in dirs:
@@ -114,7 +114,7 @@ def main():
                    os.path.split(path)[-1] == 'GL' or\
                    os.path.split(path)[-1] == 'numarray' and\
                    f != 'linear_algebra':
-                    print 'removing',os.path.join(path,f)
+                    print('removing',os.path.join(path,f))
                     shutil.rmtree(os.path.join(path,f))
                     break
                 

@@ -35,7 +35,7 @@ class TwoDAFile:
         for i,row in enumerate(self.rows):
             if row[colIndex] == entry:
                 return i
-        print 'warning: no entry',entry,'column',colName
+        print('warning: no entry',entry,'column',colName)
         return None
     
     def getRow(self,index):
@@ -67,4 +67,4 @@ if __name__ == '__main__':
     import sys
     f = TwoDAFile()
     f.fromFile(open(sys.argv[1]))
-    print f
+    print(f)

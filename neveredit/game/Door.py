@@ -11,6 +11,7 @@ from neveredit.game.SituatedObject import SituatedObjectBP
 from neveredit.util import neverglobals
 
 class Door(SituatedObject):
+    _missing_model_warnings = set()
     doorPropList = {
         'AnimationState':'Integer,0-2',
         'LinkedTo':'CExoString',
@@ -25,24 +26,52 @@ class Door(SituatedObject):
     def __init__ (self, gffEntry):        
         SituatedObject.__init__ (self, gffEntry)
         self.addPropList ('door', self.doorPropList, gffEntry)
+
+    @staticmethod
+    def _safe_index(value):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _safe_model_name(twoda, index, *columns):
+        if index is None or index < 0 or index >= twoda.getRowCount():
+            return None
+        for col in columns:
+            try:
+                val = twoda.getEntry(index, col)
+            except Exception:
+                continue
+            if val and val not in ('****', 'NULL'):
+                return str(val).lower() + '.mdl'
+        return None
         
     def getModel(self,copy=False):
         if not copy and self.model:
             return self.model
-        index = self['Appearance']
-        if index > 0:
+        index = self._safe_index(self['Appearance'])
+        model_name = None
+        if index is not None and index >= 0:
             twoda = neverglobals.getResourceManager()\
                     .getResourceByName('doortypes.2da')
-            self.modelName = twoda.getEntry(index,'Model').lower() + '.mdl'
-            model = neverglobals.getResourceManager()\
-                    .getResourceByName(self.modelName,copy)
-        else:
-            index = self['GenericType']
+            model_name = self._safe_model_name(twoda, index, 'Model', 'ModelName')
+        if not model_name:
+            index = self._safe_index(self['GenericType'])
             twoda = neverglobals.getResourceManager()\
                     .getResourceByName('genericdoors.2da')
-            self.modelName = twoda.getEntry(index,'ModelName').lower() + '.mdl'
-            model = neverglobals.getResourceManager()\
-                    .getResourceByName(self.modelName,copy)
+            model_name = self._safe_model_name(twoda, index, 'ModelName', 'Model')
+        if not model_name:
+            warning_key = (self['Appearance'], self['GenericType'])
+            if warning_key not in Door._missing_model_warnings:
+                Door._missing_model_warnings.add(warning_key)
+                logger.warning('could not resolve door model from Appearance=%r GenericType=%r',
+                               self['Appearance'], self['GenericType'])
+            self.modelName = ''
+            return None
+        self.modelName = model_name
+        model = neverglobals.getResourceManager()\
+                .getResourceByName(self.modelName,copy)
         if not copy:
             self.model = model
         return model
@@ -64,7 +93,7 @@ class DoorInstance(Door,SituatedObjectInstance):
     def __init__ (self, gffEntry):
         if gffEntry.getType() != DoorInstance.GFF_STRUCT_ID:
             logger.warning("created with gff struct type "
-                           + `gffEntry.getType()`
-                           + " should be " + `DoorInstance.GFF_STRUCT_ID`)     
+                           + repr(gffEntry.getType())
+                           + " should be " + repr(DoorInstance.GFF_STRUCT_ID))     
         SituatedObjectInstance.__init__ (self, gffEntry)
         Door.__init__ (self, gffEntry)

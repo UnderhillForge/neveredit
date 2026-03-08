@@ -73,10 +73,10 @@ def make(app):
 if __name__ == '__main__':
     app = common_setup()
     if len(sys.argv) > 2 and sys.argv[2] == 'neverscript':
-        print 'bundling neverscript'
+        print('bundling neverscript')
         neverscript_setup(app)
     else:
-        print 'bundling neveredit'
+        print('bundling neveredit')
         neveredit_setup(app)
     make(app)
     

@@ -20,7 +20,7 @@ import wx,wx.html
 
 def makeHelpViewer(helpfiles,cachedir=None):
     # Add the Zip filesystem
-    wx.FileSystem.AddHandler(wx.ZipFSHandler())
+    wx.FileSystem.AddHandler(wx.ArchiveFSHandler())
 
     # Create the viewer
     helpctrl = wx.html.HtmlHelpController()
@@ -39,7 +39,7 @@ def makeHelpViewer(helpfiles,cachedir=None):
 
 def main(args=sys.argv):
     if len(args) < 2:
-        print __doc__
+        print(__doc__)
         return
 
     args = args[1:]
@@ -49,7 +49,7 @@ def main(args=sys.argv):
         args = args[1:]
 
     if len(args) == 0:
-        print __doc__
+        print(__doc__)
         return
 
     app = wx.PySimpleApp()
@@ -62,7 +62,7 @@ def main(args=sys.argv):
     cfg = wx.ConfigBase.Get()
 
     # Add the Zip filesystem
-    wx.FileSystem.AddHandler(wx.ZipFSHandler())
+    wx.FileSystem.AddHandler(wx.ArchiveFSHandler())
 
     helpctrl = makeHelpViewer(args,cachedir)
 

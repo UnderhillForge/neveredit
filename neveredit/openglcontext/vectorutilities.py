@@ -24,7 +24,7 @@ def crossProduct( set1, set2):
     vx = set2[:,0]
     vy = set2[:,1]
     vz = set2[:,2]
-    result = numarray.zeros( (len(set1),3), set1.typecode())
+    result = numarray.zeros((len(set1), 3), set1.dtype.char)
     result[:,0] = (uy*vz)-(uz*vy)
     result[:,1] = (uz*vx)-(ux*vz)
     result[:,2] = (ux*vy)-(uy*vx)
@@ -45,7 +45,7 @@ def crossProduct4( set1, set2 ):
     vx = set2[:,0]
     vy = set2[:,1]
     vz = set2[:,2]
-    result = numarray.zeros( (len(set1),4), set1.typecode())
+    result = numarray.zeros((len(set1), 4), set1.dtype.char)
     result[:,0] = (uy*vz)-(uz*vy)
     result[:,1] = (uz*vx)-(ux*vz)
     result[:,2] = (ux*vy)-(uy*vx)
@@ -97,18 +97,18 @@ if __name__ == "__main__":
                 [0,0,0],[1,0,0],[0,1,0],
                 [1,0,0],[0,0,0],[0,1,0],
         ],'d')
-        print magnitude( data )
+        print(magnitude( data ))
         try:
             normalise( data )
         except ZeroDivisionError:
-            print 'got zero div'
+            print('got zero div')
         data = numarray.array( [
                 [1,1,0],[1,0,0],[0,1,0],
                 [1,0,1],[0,1,1],[1,1,0],
         ],'d')
-        print normalise( data )
-        print normalise( [2.0,2.0,0.0] )
-        print crossProduct( data, [-1,0,0])
-        print crossProduct( [0,0,1], [-1,0,0])
+        print(normalise( data ))
+        print(normalise( [2.0,2.0,0.0] ))
+        print(crossProduct( data, [-1,0,0]))
+        print(crossProduct( [0,0,1], [-1,0,0]))
     test()
 

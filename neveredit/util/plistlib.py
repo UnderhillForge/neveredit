@@ -104,9 +104,11 @@ class DumbXMLWriter:
 
 
 def _encode(text):
+    if isinstance(text, bytes):
+        text = text.decode("utf-8", "ignore")
     text = text.replace("&", "&amp;")
     text = text.replace("<", "&lt;")
-    return text.encode("utf-8")
+    return text
 
 
 PLISTHEADER = """\
@@ -121,7 +123,7 @@ class PlistWriter(DumbXMLWriter):
         DumbXMLWriter.__init__(self, file)
 
     def writeValue(self, value):
-        if isinstance(value, (str, unicode)):
+        if isinstance(value, str):
             self.simpleElement("string", value)
         elif isinstance(value, bool):
             # must switch for bool before int, as bool is a
@@ -155,10 +157,10 @@ class PlistWriter(DumbXMLWriter):
 
     def writeDict(self, d):
         self.beginElement("dict")
-        items = d.items()
+        items = list(d.items())
         items.sort()
         for key, value in items:
-            if not isinstance(key, (str, unicode)):
+            if not isinstance(key, str):
                 raise TypeError("keys must be strings")
             self.simpleElement("key", key)
             self.writeValue(value)
@@ -193,6 +195,15 @@ class Dict:
     def copy(self):
         return self.__class__(**self.__dict__)
 
+    def __getitem__(self, key):
+        return self.__dict__[key]
+
+    def __setitem__(self, key, value):
+        self.__dict__[key] = value
+
+    def __contains__(self, key):
+        return key in self.__dict__
+
     def __getattr__(self, attr):
         """Delegate everything else to the dict object."""
         return getattr(self.__dict__, attr)
@@ -207,8 +218,8 @@ class Plist(Dict):
 
     def fromFile(cls, pathOrFile):
         didOpen = 0
-        if isinstance(pathOrFile, (str, unicode)):
-            pathOrFile = open(pathOrFile)
+        if isinstance(pathOrFile, str):
+            pathOrFile = open(pathOrFile, 'rb')
             didOpen = 1
         p = PlistParser()
         plist = p.parse(pathOrFile)
@@ -218,7 +229,7 @@ class Plist(Dict):
     fromFile = classmethod(fromFile)
 
     def write(self, pathOrFile):
-        if isinstance(pathOrFile, (str, unicode)):
+        if isinstance(pathOrFile, str):
             pathOrFile = open(pathOrFile, "w")
             didOpen = 1
         else:
@@ -291,6 +302,15 @@ class Date:
 
 class PlistParser:
 
+    @staticmethod
+    def _normalize_numeric_text(value):
+        value = value.strip()
+        if value.startswith("b'") and value.endswith("'"):
+            return value[2:-1]
+        if value.startswith('b"') and value.endswith('"'):
+            return value[2:-1]
+        return value
+
     def __init__(self):
         self.stack = []
         self.currentKey = None
@@ -330,11 +350,10 @@ class PlistParser:
             self.stack[-1].append(value)
 
     def getData(self):
-        data = "".join(self.data)
-        try:
-            data = data.encode("ascii")
-        except UnicodeError:
-            pass
+        if self.data and isinstance(self.data[0], bytes):
+            data = b"".join(self.data).decode("utf-8")
+        else:
+            data = "".join(self.data)
         self.data = []
         return data
 
@@ -365,9 +384,9 @@ class PlistParser:
     def end_false(self):
         self.addObject(False)
     def end_integer(self):
-        self.addObject(int(self.getData()))
+        self.addObject(int(self._normalize_numeric_text(self.getData())))
     def end_real(self):
-        self.addObject(float(self.getData()))
+        self.addObject(float(self._normalize_numeric_text(self.getData())))
     def end_string(self):
         self.addObject(self.getData())
     def end_data(self):
@@ -376,31 +395,11 @@ class PlistParser:
         self.addObject(Date(self.getData()))
 
 
-# cruft to support booleans in Python <= 2.3
-import sys
-if sys.version_info[:2] < (2, 3):
-    # Python 2.2 and earlier: no booleans
-    # Python 2.2.x: booleans are ints
-    class bool(int):
-        """Imitation of the Python 2.3 bool object."""
-        def __new__(cls, value):
-            return int.__new__(cls, not not value)
-        def __repr__(self):
-            if self:
-                return "True"
-            else:
-                return "False"
-    True = bool(1)
-    False = bool(0)
-else:
-    # Bind the boolean builtins to local names
-    True = True
-    False = False
-    bool = bool
+# Python 3 always has builtin bool/True/False.
 
 
 if __name__ == "__main__":
-    from StringIO import StringIO
+    from io import StringIO
     import time
     if len(sys.argv) == 1:
         pl = Plist(
@@ -410,7 +409,7 @@ if __name__ == "__main__":
             anInt = 728,
             aDict=Dict(
                 anotherString="<hello & hi there!>",
-                aUnicodeValue=u'M\xe4ssig, Ma\xdf',
+                aUnicodeValue='M\xe4ssig, Ma\xdf',
                 aTrueValue=True,
                 aFalseValue=False,
             ),
@@ -421,15 +420,15 @@ if __name__ == "__main__":
     elif len(sys.argv) == 2:
         pl = Plist.fromFile(sys.argv[1])
     else:
-        print "Too many arguments: at most 1 plist file can be given."
+        print("Too many arguments: at most 1 plist file can be given.")
         sys.exit(1)
 
     # unicode keys are possible, but a little awkward to use:
-    pl[u'\xc5benraa'] = "That was a unicode key."
+    pl['\xc5benraa'] = "That was a unicode key."
     f = StringIO()
     pl.write(f)
     xml = f.getvalue()
-    print xml
+    print(xml)
     f.seek(0)
     pl2 = Plist.fromFile(f)
     assert pl == pl2

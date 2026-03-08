@@ -22,8 +22,12 @@ import neveredit.file.Language
 from neveredit.util import neverglobals
 import neveredit.util.Preferences
 
-def cleanstr(str):
-    return str
+def cleanstr(value):
+    if value is None:
+        return ''
+    if isinstance(value, bytes):
+        return value.decode('latin1', 'ignore')
+    return str(value)
 #    import string
 #    allchars = string.maketrans('','')
 #    delchars = ''.join([c for c in allchars if c not in string.printable])
@@ -71,18 +75,18 @@ class CExoLocStringControl(wx.BoxSizer):
             self.textCtrl = wx.TextCtrl(propWindow,-1,'',
                                        wx.DefaultPosition,
                                        (250,24))                
-        wx.EVT_TEXT(propWindow,self.textCtrl.GetId(),propWindow.controlUsed)
+        self.textCtrl.Bind(wx.EVT_TEXT, propWindow.controlUsed)
 
         self.label = wx.StaticText(propWindow,-1,'')
 
         self.langIDChoice = wx.Choice(propWindow,-1,choices=langChoices)
         self.langIDChoice.SetSelection(
             neveredit.file.Language.convertFromBIOCode(self.langID))
-        wx.EVT_CHOICE(propWindow,self.langIDChoice.GetId(),self.langSelection)
+        self.langIDChoice.Bind(wx.EVT_CHOICE, self.langSelection)
 
         self.genderChoice = wx.Choice(propWindow,-1,choices=genderChoices)
         self.genderChoice.SetSelection(self.gender)
-        wx.EVT_CHOICE(propWindow,self.genderChoice.GetId(),self.langSelection)
+        self.genderChoice.Bind(wx.EVT_CHOICE, self.langSelection)
 
         choiceSizer.Add(self.langIDChoice, 0, wx.ALL, 5)
         choiceSizer.Add(self.genderChoice, 0, wx.ALL, 5)
@@ -98,8 +102,7 @@ class CExoLocStringControl(wx.BoxSizer):
         (text,index) = self.prop.getValue().getStringAndIndex(self.langID,self.gender)
         exp_index = self.langID * 2 + self.gender
         if exp_index != index:
-            s = string.join(["This is a stock NWN application string."])
-            self.label.SetLabel(s)
+            self.label.SetLabel("This is a stock NWN application string.")
         else:
             self.label.SetLabel("This is a string from the current module.")
         self.textCtrl.SetValue(text)
@@ -132,6 +135,7 @@ class PropWindow(scrolled.ScrolledPanel, ResourceListChangeListener):
     def __init__(self,parent):
         scrolled.ScrolledPanel.__init__(self,parent,-1)
         self.propGrid = wx.GridBagSizer()
+        self.propGrid.AddGrowableCol(0)
         self.SetSizer(self.propGrid)
         self.SetAutoLayout(True)
         self.SetupScrolling(scroll_x=False)        
@@ -148,7 +152,7 @@ class PropWindow(scrolled.ScrolledPanel, ResourceListChangeListener):
         self.defaultlang = p['DefaultLocStringLang']
          
     def getControlByPropName(self,name):
-        for propControl,prop in self.propControls.values():
+        for propControl,prop in list(self.propControls.values()):
             if prop.getName() == name:
                 return propControl
         return None
@@ -157,7 +161,7 @@ class PropWindow(scrolled.ScrolledPanel, ResourceListChangeListener):
         self.updateControls()
 
     def updateControls(self):
-        for propControl,prop in self.propControls.values():
+        for propControl,prop in list(self.propControls.values()):
             typeSpec = prop.getSpec()
             if typeSpec[0] == "ResRef":
                 self.updateResRefControl(propControl.control,typeSpec,prop)
@@ -167,7 +171,7 @@ class PropWindow(scrolled.ScrolledPanel, ResourceListChangeListener):
     def makePropsForItem(self,item,observer=None):
         '''Make all property controls for a given item.
         The item must be implementing the NeverData interface.'''
-        logger.debug("making props for " + `item`)
+        logger.debug("making props for " + repr(item))
         self.cleanPropPage()
         neverglobals.getResourceManager().addResourceListChangeListener(self)
         self.changeObserver = observer
@@ -210,7 +214,7 @@ class PropWindow(scrolled.ScrolledPanel, ResourceListChangeListener):
                     self.propGrid.Add(line,pos=(r+1,0),span=(1,3),flag=wx.EXPAND)
                     self.lines.append(line)
                 elif not p.getSpec()[0] == 'Hidden':
-                    print 'Error: unhandled prop type',p.getSpec()
+                    print('Error: unhandled prop type',p.getSpec())
                     if label:
                         label.Destroy()
             if control:
@@ -218,7 +222,6 @@ class PropWindow(scrolled.ScrolledPanel, ResourceListChangeListener):
                 if width > minWidth:
                     minWidth = width
         self.propsChanged = False
-        self.propGrid.AddGrowableCol(0)
         self.propGrid.Layout()
         #self.propGrid.SetVirtualSizeHints(self)
         self.FitInside()
@@ -231,7 +234,7 @@ class PropWindow(scrolled.ScrolledPanel, ResourceListChangeListener):
         if not self.propsChanged:
             return False
         logger.debug('applying prop control values')
-        for propControl in self.propControls.values():
+        for propControl in list(self.propControls.values()):
             control = propControl[0].control
             prop = propControl[1]
             typeSpec = prop.getSpec()
@@ -287,7 +290,7 @@ class PropWindow(scrolled.ScrolledPanel, ResourceListChangeListener):
             elif pName == 'Hidden' or pName == 'Portrait':
                 pass
             else:
-                print _('error, unknown prop type:'),pName
+                print(_('error, unknown prop type:'),pName)
             item.setProperty(prop.getName(),prop.getValue())
         if self.visualChanged:
             self.item.forceModelReload()
@@ -312,20 +315,20 @@ class PropWindow(scrolled.ScrolledPanel, ResourceListChangeListener):
                 else:
                     control = wx.TextCtrl(parent,-1,prop.getValue(),wx.DefaultPosition,\
                                                         (250,24),style=wx.TE_PROCESS_ENTER)
-                    wx.EVT_TEXT_ENTER(self,control.GetId(),self.controlUsed)
+                    control.Bind(wx.EVT_TEXT_ENTER, self.controlUsed)
             else:
                 control = wx.TextCtrl(parent,-1,prop.getValue(),wx.DefaultPosition,(250,24))
-                wx.EVT_TEXT(self,control.GetId(),self.controlUsed)
+                control.Bind(wx.EVT_TEXT, self.controlUsed)
         elif type == 'Percentage':
             control = wx.SpinCtrl(parent,-1)
             control.SetRange(0,100)
             control.SetValue(prop.getValue())
-            wx.EVT_SPINCTRL(self,control.GetId(),self.controlUsed)
+            control.Bind(wx.EVT_SPINCTRL, self.controlUsed)
             #control.SetTickFreq(5,0)
         elif type == 'Boolean':
             control = wx.CheckBox(parent,-1,'')
             control.SetValue(prop.getValue())
-            wx.EVT_CHECKBOX(self,control.GetId(),self.controlUsed)
+            control.Bind(wx.EVT_CHECKBOX, self.controlUsed)
         elif type == 'Integer':
             min = 0
             max = 100
@@ -342,8 +345,8 @@ class PropWindow(scrolled.ScrolledPanel, ResourceListChangeListener):
                 # and as they shouldn't be edited anyway..
                 control.SetValue(-1)
                 control.Disable()
-            wx.EVT_SPINCTRL(self,control.GetId(),self.controlUsed)
-            wx.EVT_TEXT(self,control.GetId(),self.controlUsed)
+            control.Bind(wx.EVT_SPINCTRL, self.controlUsed)
+            control.Bind(wx.EVT_TEXT, self.controlUsed)
         elif type == "ResRef":
             control = self.makeResRefControl(typeSpec, prop, parent)
         elif type == "BGRColour":
@@ -355,7 +358,7 @@ class PropWindow(scrolled.ScrolledPanel, ResourceListChangeListener):
             control.SetBezelWidth(0)
             control.SetForegroundColour(wx.Colour(red,green,blue))
             control.SetBackgroundColour(wx.Colour(red,green,blue))
-            wx.EVT_BUTTON(self,control.GetId(),self.handleColourButton)
+            control.Bind(wx.EVT_BUTTON, self.handleColourButton)
         elif type == "List":
             if typeSpec[1] == 'HAKs':
                 control = HAKListControl(prop, parent)
@@ -375,24 +378,30 @@ class PropWindow(scrolled.ScrolledPanel, ResourceListChangeListener):
                 control.Check(i,False)
 #            for n in prop.getValue():
 #                control.Check(choices.index(n['Mod_Hak'].lower()))
-            wx.EVT_CHECKLISTBOX(self,control.GetId(),self.controlUsed)
+            control.Bind(wx.EVT_CHECKLISTBOX, self.controlUsed)
         elif type == '2daIndex':
             twoda = neverglobals.getResourceManager().getResourceByName(typeSpec[1])
             choices = []
             col = typeSpec[2]
             if typeSpec[3] == 'strref':
-                for i in xrange(twoda.getRowCount()):
+                for i in range(twoda.getRowCount()):
                     entry = 'invalid'
                     try:
-                        entry = neverglobals.getResourceManager().\
-                                    getDialogString(int(twoda.getEntry(i,col)))
-                    except ValueError:
+                        raw_strref = twoda.getEntry(i,col)
+                        strref = int(raw_strref)
+                        entry = neverglobals.getResourceManager().getDialogString(strref)
+                        if entry is None:
+                            # Keep rows selectable even when dialog.tlk has no matching string.
+                            entry = 'StrRef %d' % strref
+                    except (TypeError, ValueError):
                         if len(typeSpec) > 4:
                             entry = twoda.getEntry(i,typeSpec[4])
+                    if entry is None:
+                        entry = 'invalid'
                     choices.append(entry)
             else:
                 choices = [twoda.getEntry(i,col)
-                           for i in xrange(twoda.getRowCount())]
+                           for i in range(twoda.getRowCount())]
             if typeSpec[1] in ['ambientmusic.2da','ambientsound.2da','soundset.2da']:
                 # may be used for other 2das in the future
                 control = SoundControl(prop,parent,choices,typeSpec[1])
@@ -404,16 +413,16 @@ class PropWindow(scrolled.ScrolledPanel, ResourceListChangeListener):
             p = neverglobals.getResourceManager().getPortraitByIndex(prop.getValue(),'s')
             if p:
                 control = wx.BitmapButton(parent,-1,WxUtils.bitmapFromImage(p))
-                wx.EVT_BUTTON(self,control.GetId(),self.handlePortraitButton)
+                control.Bind(wx.EVT_BUTTON, self.handlePortraitButton)
             else:
                 logger.error('unknown portrait index:'+str(prop.getValue()))
-                import Image,ImageDraw,ImageFont
+                from PIL import Image, ImageDraw, ImageFont
                 image = Image.new("1",(32,64))
                 font = ImageFont.load_default()
                 draw = ImageDraw.Draw(image)
                 draw.text((3,3),"portrait not found",font=font)
                 control = wx.BitmapButton(parent,-1,WxUtils.bitmapFromImage(image))
-                wx.EVT_BUTTON(self,control.GetId(),self.handlePortraitButton)
+                control.Bind(wx.EVT_BUTTON, self.handlePortraitButton)
         if control:
             label = wx.StaticText(self,-1,prop.getName().split('.')[-1])
         else:
@@ -425,7 +434,7 @@ class PropWindow(scrolled.ScrolledPanel, ResourceListChangeListener):
         keyList, index = self.getCustomChoiceList(typeSpec, prop)
         control = wx.Choice(parent,-1,choices=keyList)                
         control.SetSelection(index)
-        wx.EVT_CHOICE(self,control.GetId(),self.controlUsed)
+        control.Bind(wx.EVT_CHOICE, self.controlUsed)
         return control
 
     def updateCustomChoiceControl(self, control, typeSpec, prop):        
@@ -439,7 +448,7 @@ class PropWindow(scrolled.ScrolledPanel, ResourceListChangeListener):
         if typeSpec[1] == "Creature_Tags":
             module = neverglobals.getResourceManager().module
             if module:
-                for ctags in [d['creatures'] for d in module.getTags()['areas'].values()]:
+                for ctags in [d['creatures'] for d in list(module.getTags()['areas'].values())]:
                     tags.extend(ctags)
         selection = prop.getValue()
         try:
@@ -458,11 +467,11 @@ class PropWindow(scrolled.ScrolledPanel, ResourceListChangeListener):
                 control.SetSelection(index)
             else:
                 control.SetSelection(0)
-            wx.EVT_COMBOBOX(self,control.GetId(),self.controlUsed)
-            wx.EVT_TEXT(self, control.GetId(), self.controlUsed)
+            control.Bind(wx.EVT_COMBOBOX, self.controlUsed)
+            control.Bind(wx.EVT_TEXT, self.controlUsed)
         else:
             control = wx.TextCtrl(parent,-1,prop.getValue())
-            wx.EVT_TEXT(self,control.GetId(),self.controlUsed)
+            control.Bind(wx.EVT_TEXT, self.controlUsed)
         return control
 
     def updateResRefControl(self, control, typeSpec, prop):        
@@ -478,7 +487,13 @@ class PropWindow(scrolled.ScrolledPanel, ResourceListChangeListener):
     def getResRefList(self, typeSpec, prop):
         keys = neverglobals.getResourceManager().getDirKeysWithExtensions(typeSpec[1])
         keyList = [''] #can leave empty
-        keyList.extend([x[0].strip('\0') for x in keys])
+        for key in keys:
+            resref = key[0]
+            if isinstance(resref, bytes):
+                resref = resref.rstrip(b'\0').decode('latin1', 'ignore')
+            else:
+                resref = str(resref).strip('\0')
+            keyList.append(resref)
         selection = prop.getValue()
         try:
             index = keyList.index(selection)
@@ -514,7 +529,7 @@ class PropWindow(scrolled.ScrolledPanel, ResourceListChangeListener):
         for l in self.lines:
             self.propGrid.Detach(l)
             l.Destroy()
-        for c,p in self.propControls.values():
+        for c,p in list(self.propControls.values()):
             self.propGrid.Detach(c.control)
             c.control.Destroy()
         self.propControls = {}

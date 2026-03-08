@@ -27,7 +27,7 @@ class BinaryDataHandler:
         return self.readUIntsBuf(b,count)
 
     def readUIntsBuf(self,b,count):
-        format = string.join(['<',`int(count)`,'I'],'')
+        format = '<' + repr(int(count)) + 'I'
         return struct.unpack(format,b)
         
     def readInt64Buf(self,d):
@@ -50,7 +50,7 @@ class BinaryDataHandler:
         return self.readFloatsBuf(b,count)
     
     def readFloatsBuf(self,b,count):
-        format = '<' + `int(count)` + 'f'
+        format = '<' + repr(int(count)) + 'f'
         return struct.unpack(format,b)
 
     def readDoubleBuf(self,b):
@@ -75,7 +75,7 @@ class BinaryDataHandler:
         return struct.unpack('<H',f.read(2))[0]
 
     def readUWordsFile(self,f,count):
-        format = '<' + `int(count)` + 'H'
+        format = '<' + repr(int(count)) + 'H'
         result = struct.unpack(format,f.read(2*count))
         return result
 

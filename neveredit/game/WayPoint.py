@@ -36,7 +36,16 @@ class WayPoint(LocatedNeverData):
         #print(index)
         if not index:
             index = 1   # only influes on apearence in the toolset, not in game
-        self.modelName = twoda.getEntry(index,'RESREF').lower() + '.mdl'
+        try:
+            index = int(index)
+            if index < 0 or index >= twoda.getRowCount():
+                return None
+        except (TypeError, ValueError):
+            return None
+        resref = twoda.getEntry(index,'RESREF')
+        if not resref or resref in ('****', 'NULL'):
+            return None
+        self.modelName = str(resref).lower() + '.mdl'
         #print('MODELNAME : '+self.modelName)
         model = neverglobals.getResourceManager()\
                 .getResourceByName(self.modelName,copy)
@@ -95,8 +104,8 @@ class WayPointInstance(WayPoint, NeverInstance):
     def __init__(self,gffEntry):
         if gffEntry.getType() != WayPointInstance.GFF_STRUCT_ID:
             logger.warning("created with gff struct type "
-                           + `gffEntry.getType()`
-                           + " should be " + `WayPointInstance.GFF_STRUCT_ID`)
+                           + repr(gffEntry.getType())
+                           + " should be " + repr(WayPointInstance.GFF_STRUCT_ID))
         WayPoint.__init__(self,gffEntry)
         self.addPropList('instance',self.waypointInstProplist,gffEntry)
 

@@ -1,19 +1,19 @@
 import logging
 logger = logging.getLogger("neveredit")
-import ConfigParser,cStringIO
-from sets import Set
+import configparser,io
+Set = set
 
 from neveredit.util import neverglobals
 from neveredit.game.Tile import Tile
 
-class TileSetFile(ConfigParser.ConfigParser):
+class TileSetFile(configparser.ConfigParser):
     def __init__(self):
-        ConfigParser.ConfigParser.__init__(self)
+        configparser.ConfigParser.__init__(self)
         self.groupTiles = None
         self.tiles = None
         
     def fromFile(self,f):        
-        self.readfp(f)
+        self.read_file(f)
 
     def getTileCount(self):
         return self.getint('TILES','Count')
@@ -35,11 +35,11 @@ class TileSetFile(ConfigParser.ConfigParser):
     
     def getGroupTileIDs(self,group):
         tiles = []
-        gname = 'GROUP' + `group`
+        gname = 'GROUP' + repr(group)
         rows = self.getint(gname,'Rows')
         cols = self.getint(gname,'Columns')
         for i in range(rows*cols):
-            tiles.append(self.getint(gname,'Tile'+`i`))
+            tiles.append(self.getint(gname,'Tile'+repr(i)))
         return tiles
 
     def getStandardTiles(self):
@@ -54,16 +54,16 @@ class TileSetFile(ConfigParser.ConfigParser):
         return t
     
     def getTileInfo(self,tid):
-        return self.items('TILE'+`tid`)
+        return self.items('TILE'+repr(tid))
     
     def __getitem__(self,key):
         section,entry = key.split('.')
         return self.get(section,entry)
     
     def __str__(self):
-        io = cStringIO.StringIO
-        self.write(io)
-        return io.value()
+        buffer = io.StringIO()
+        self.write(buffer)
+        return buffer.getvalue()
 
     def __repr__(self):
         return self.__str__()
@@ -74,5 +74,5 @@ if __name__ == '__main__':
     t = TileSetFile()
     t.fromFile(open(sys.argv[1]))
     for i in t.items('GENERAL'):
-        print i
+        print(i)
         

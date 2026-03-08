@@ -10,7 +10,7 @@ Simple module providing a quaternion class for manipulating rotations easily.
 """
 from math import *
 from numarray import *
-import utilities
+from . import utilities
 
 def fromXYZR( x,y,z, r ):
         """Create a new quaternion from a VRML-style rotation
@@ -154,18 +154,18 @@ class Quaternion(object):
 
 
 def test_quat ():
-        print 'fromEuler'
-        print fromEuler( pi/2 ).XYZR()
-        print fromEuler( y = pi/2 ).XYZR()
-        print fromEuler( z = pi/2 ).XYZR()
-        print fromEuler( y = pi/2, z = pi/2 ).matrix()
+        print('fromEuler')
+        print(fromEuler( pi/2 ).XYZR())
+        print(fromEuler( y = pi/2 ).XYZR())
+        print(fromEuler( z = pi/2 ).XYZR())
+        print(fromEuler( y = pi/2, z = pi/2 ).matrix())
         rot = fromEuler( y = pi/2, z = pi/2 ).XYZR()
-        print apply( fromXYZR, rot).matrix()
-        print fromEuler( y = pi/2, z = pi/2 )
+        print(fromXYZR(*rot).matrix())
+        print(fromEuler( y = pi/2, z = pi/2 ))
         first = fromXYZR( 0,1,0,0 )
         second = fromXYZR( 0,1,0,pi )
         for fraction in arange( 0.0, 1.0, .01 ):
-                print first.slerp( second, fraction )
+                print(first.slerp( second, fraction ))
 
 if __name__== "__main__":
         test_quat ()

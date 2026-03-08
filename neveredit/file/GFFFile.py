@@ -65,7 +65,7 @@ class GFFStruct:
         return self.type
     
     def addEntry(self, label, entry):
-        if label in self.entries.keys():
+        if label in list(self.entries.keys()):
             logger.warning('adding "' + label
                            + '" - it already exists in struct')
         else:
@@ -114,7 +114,7 @@ class GFFStruct:
         return (targetStruct,structNames[-1])
 
     def getEntryNames(self):
-        return self.entries.keys()
+        return list(self.entries.keys())
     
     def hasEntry(self, label):
         try:
@@ -141,8 +141,8 @@ class GFFStruct:
             entry = s.getEntry(n)
         except KeyError:
             if label != 'Mod_HakList': #upgrade mod file
-                print >>sys.stderr,'error in setInterpretedEntry: only existing entries accepted',label
-                print >>sys.stderr,'possible entries are:',s.getEntryNames()
+                print('error in setInterpretedEntry: only existing entries accepted',label, file=sys.stderr)
+                print('possible entries are:',s.getEntryNames(), file=sys.stderr)
                 return
             else:
                 s.entries[n] = (value,FIELDTYPENAMES['List'])
@@ -162,7 +162,7 @@ class GFFStruct:
             del s.entries[label]
         
     def __str__(self):        
-        s = 'type: ' + `self.type` + ' entries: ' + `self.getEntryNames()`
+        s = 'type: ' + repr(self.type) + ' entries: ' + repr(self.getEntryNames())
         return s
 
     def __repr__(self):
@@ -232,9 +232,9 @@ class GFFFile(NeverFile):
         self.fieldDataOffset = self.dataHandler.readUIntFile(f)
         self.fieldDataCount = self.dataHandler.readUIntFile(f)
         self.fieldIndicesOffset = self.dataHandler.readUIntFile(f)
-        self.fieldIndicesCount = self.dataHandler.readUIntFile(f)/4
+        self.fieldIndicesCount = self.dataHandler.readUIntFile(f)//4
         self.listIndicesOffset = self.dataHandler.readUIntFile(f)
-        self.listIndicesCount = self.dataHandler.readUIntFile(f)/4
+        self.listIndicesCount = self.dataHandler.readUIntFile(f)//4
 
     def headerToFile(self,f,offset=-1):
         if offset >= 0:
@@ -310,7 +310,8 @@ class GFFFile(NeverFile):
     def labelsFromFile(self,f):
         f.seek(self.offset + self.labelOffset)
         for i in range(self.labelCount):
-            self.labels.append(f.read(16).strip('\0'))
+            raw_label = f.read(16)
+            self.labels.append(raw_label.rstrip(b'\0').decode('latin1', 'ignore'))
 
     def labelsToFile(self,f):
         f.seek(self.offset + self.labelOffset)
@@ -346,14 +347,14 @@ class GFFFile(NeverFile):
 
     def listIndicesToFile(self,f):
         f.seek(self.offset + self.listIndicesOffset)
-        beginIndices = self.lists.keys()
+        beginIndices = list(self.lists.keys())
         beginIndices.sort() #make sure we get them in the right order
         c = 0
         for l in beginIndices:
             if l*4+self.offset+self.listIndicesOffset != f.tell():
-                print >>sys.stderr,'hmmm, list index is',l*4+self.offset+self.listIndicesOffset,\
-                                                                        'but file is at',f.tell()
-                print >>sys.stderr,'error on list',c,l
+                print('hmmm, list index is',l*4+self.offset+self.listIndicesOffset,\
+                                                                        'but file is at',f.tell(), file=sys.stderr)
+                print('error on list',c,l, file=sys.stderr)
             c += 1
             self.dataHandler.writeUIntFile(len(self.lists[l]),f)
             for i in self.lists[l]:
@@ -403,7 +404,7 @@ class GFFFile(NeverFile):
             elif type == 'CExoLocString':
                 self.fieldData += self.dataHandler.writeCExoLocStringsBuf(content[0],content[1])
             else:
-                print >>sys.stderr,'Error: unhandled type',type,label
+                print('Error: unhandled type',type,label, file=sys.stderr)
                 return (-1,-1,0)
             return (t,labelIndex,self.dataHandler.writeUIntBuf(o))
         
@@ -413,9 +414,9 @@ class GFFFile(NeverFile):
         label = self.labels[entry[1]]
         #print 'interpreting',entry,type,label
         if type == 'BYTE':
-            return (label,self.dataHandler.readUByteBuf(entry[2][0]),entry[0])
+            return (label,self.dataHandler.readUByteBuf(entry[2][0:1]),entry[0])
         elif type == 'CHAR':
-            return (label,self.dataHandler.readCharBuf(entry[2][0]),entry[0])
+            return (label,self.dataHandler.readCharBuf(entry[2][0:1]),entry[0])
         elif type == 'WORD':
             return (label,self.dataHandler.readUWordBuf(entry[2][0:2]),entry[0])
         elif type == 'SHORT':
@@ -429,7 +430,7 @@ class GFFFile(NeverFile):
         elif type == 'Struct':
             return (label,self.makeStructure(f,self.dataHandler.readUIntBuf(entry[2])),entry[0])
         elif type == 'List':
-            return (label,self.makeList(f,self.dataHandler.readUIntBuf(entry[2])/4),entry[0])
+            return (label,self.makeList(f,self.dataHandler.readUIntBuf(entry[2])//4),entry[0])
         else:
             #complex type other than struct and list
             o = self.dataHandler.readUIntBuf(entry[2])
@@ -450,7 +451,7 @@ class GFFFile(NeverFile):
             elif type == 'CExoLocString':
                 return (label,self.dataHandler.readCExoLocStrings(f),entry[0])
             else:
-                print >>sys.stderr,'Error: unhandled type',type,entry[0]
+                print('Error: unhandled type',type,entry[0], file=sys.stderr)
         return ('INVALID',None,None)
     
     def makeList(self,f,i):
@@ -467,18 +468,29 @@ class GFFFile(NeverFile):
             try:
                 field = self.interpretField(f,entry[1])
             except:
+                field_label = 'unknown'
+                try:
+                    field_label = self.labels[self.fields[entry[1]][1]]
+                except Exception:
+                    pass
                 logger.exception('exception on making struct field "' +\
-                                            self.labels[self.fields[entry[1]]] + '": ' + `f`)
+                                            field_label + '": ' + repr(f))
                 raise
             struct.addEntry(field[0],(field[1],field[2]))
         else:
-            index = entry[1]/4 #offset in bytes
+            index = entry[1]//4 #offset in bytes
             for i in range(entry[2]):
                 try:
                     field = self.interpretField(f,self.fieldIndices[index + i])
                 except:
+                    field_label = 'unknown'
+                    try:
+                        bad_index = self.fieldIndices[index + i]
+                        field_label = self.labels[self.fields[bad_index][1]]
+                    except Exception:
+                        pass
                     logger.exception('exception on making struct field "' +\
-                            self.labels[self.fields[self.fieldIndices[index+1]]] + '" ' + `f`)
+                            field_label + '" ' + repr(f))
                     raise
                 struct.addEntry(field[0],(field[1],field[2]))
         return struct
@@ -503,18 +515,18 @@ class GFFFile(NeverFile):
             #first get a struct index, because the root must be at index 0
             structIndex = len(self.structs)
             self.structs.append([struct.type,0,numEntries])
-            label = struct.entries.keys()[0]
-            entry = struct.entries.values()[0]
+            label = list(struct.entries.keys())[0]
+            entry = list(struct.entries.values())[0]
             t = type(self.fieldData)
             try:
                 flattened = self.uninterpretField(label,entry[0],entry[1])
             except:
                 logger.exception('exception on flattening "'
-                                 + label + '": ' + `entry[0]` + ' ' + `type(self.fieldData)`)
+                                 + label + '": ' + repr(entry[0]) + ' ' + repr(type(self.fieldData)))
                 raise
             if t != type(self.fieldData):
-                logger.warning('warning, type of fielddata changed from ' + `t` + ' to ' +\
-                                                `type(self.fieldData)` + ' after ' + `entry`)
+                logger.warning('warning, type of fielddata changed from ' + repr(t) + ' to ' +\
+                                                repr(type(self.fieldData)) + ' after ' + repr(entry))
             index = len(self.fields)
             self.fields.append(flattened)
             self.structs[structIndex][1] = index
@@ -531,11 +543,11 @@ class GFFFile(NeverFile):
                     flatEntries.append(self.uninterpretField(e,entry[0],entry[1]))
                 except:
                     logger.exception('exception on flattening "' + e
-                                     + '": ' + `entry[0]`  + ' ' + `type(self.fieldData)`)
+                                     + '": ' + repr(entry[0])  + ' ' + repr(type(self.fieldData)))
                     raise
                 if t != type(self.fieldData):
-                    logger.warning('warning, type of fielddata changed from ' + `t` + ' to '\
-                                                 + `type(self.fieldData)` + ' after ' + `entry`)
+                    logger.warning('warning, type of fielddata changed from ' + repr(t) + ' to '\
+                                                 + repr(type(self.fieldData)) + ' after ' + repr(entry))
             #the children probably wrote their own struct fields, so adjust our index
             self.structs[structIndex][1] = len(self.fieldIndices) * 4
             #and finally write out our entries in a contiguous chunk
@@ -613,26 +625,26 @@ class GFFFile(NeverFile):
         return gff
     
     def __str__(self):
-        s = `self.type` + ' ' + `self.version` + '\n'
-        s += 'offset: ' + `self.offset` + '\n'
-        s += 'structOffset: ' + `self.structOffset` + '\n'
-        s += 'structCount: ' + `self.structCount` + '\n'
-        s += 'fieldOffset: ' + `self.fieldOffset` + '\n'
-        s += 'fieldCount: ' + `self.fieldCount` + '\n'
-        s += 'labelOffset: ' + `self.labelOffset` + '\n'
-        s += 'labelCount: ' + `self.labelCount` + '\n'
-        s += 'fieldDataOffset: ' + `self.fieldDataOffset` + '\n'
-        s += 'fieldDataCount: ' + `self.fieldDataCount` + '\n'
-        s += 'fieldIndicesOffset: ' + `self.fieldIndicesOffset` + '\n'
-        s += 'fieldIndicesCount: ' + `self.fieldIndicesCount` + '\n'
-        s += 'listIndicesOffset: ' + `self.listIndicesOffset` + '\n'
-        s += 'listIndicesCount: ' + `self.listIndicesCount` + '\n'
+        s = repr(self.type) + ' ' + repr(self.version) + '\n'
+        s += 'offset: ' + repr(self.offset) + '\n'
+        s += 'structOffset: ' + repr(self.structOffset) + '\n'
+        s += 'structCount: ' + repr(self.structCount) + '\n'
+        s += 'fieldOffset: ' + repr(self.fieldOffset) + '\n'
+        s += 'fieldCount: ' + repr(self.fieldCount) + '\n'
+        s += 'labelOffset: ' + repr(self.labelOffset) + '\n'
+        s += 'labelCount: ' + repr(self.labelCount) + '\n'
+        s += 'fieldDataOffset: ' + repr(self.fieldDataOffset) + '\n'
+        s += 'fieldDataCount: ' + repr(self.fieldDataCount) + '\n'
+        s += 'fieldIndicesOffset: ' + repr(self.fieldIndicesOffset) + '\n'
+        s += 'fieldIndicesCount: ' + repr(self.fieldIndicesCount) + '\n'
+        s += 'listIndicesOffset: ' + repr(self.listIndicesOffset) + '\n'
+        s += 'listIndicesCount: ' + repr(self.listIndicesCount) + '\n'
 
-        s += 'structs: ' + `self.structs`[:150] + '\n'
-        s += 'fields: ' + `self.fields`[:150] + '\n'
-        s += 'labels: ' + `self.labels`[:150] + '\n'
-        s += 'fieldIndices: ' + `self.fieldIndices`[:150] + '\n'
-        s += 'lists: ' + `self.lists`[:150] + '\n'
+        s += 'structs: ' + repr(self.structs)[:150] + '\n'
+        s += 'fields: ' + repr(self.fields)[:150] + '\n'
+        s += 'labels: ' + repr(self.labels)[:150] + '\n'
+        s += 'fieldIndices: ' + repr(self.fieldIndices)[:150] + '\n'
+        s += 'lists: ' + repr(self.lists)[:150] + '\n'
         s += '------ root structure starts here ------\n'
         s += self.getRoot().__str__()
         import pprint
@@ -644,18 +656,18 @@ class GFFFile(NeverFile):
 if __name__ == "__main__":
     if(len(sys.argv) >= 2):
         f = GFFFile()
-        print >>sys.stderr,'reading',sys.argv[1]
+        print('reading',sys.argv[1], file=sys.stderr)
         f.fromFile(open(sys.argv[1],'rb'),0)
         if len(sys.argv) >= 3:
-            print >>sys.stderr,'writing',sys.argv[2]
+            print('writing',sys.argv[2], file=sys.stderr)
             f.toFile(open(sys.argv[2],'wb'))            
-            print >>open('out.txt','w'),f
+            print(f, file=open('out.txt','w'))
             f = f.clone()
             #f.flattenRootStructure()
             f.toFile(open(sys.argv[2] + '2','wb'))
-            print >>open('out2.txt','w'),f
+            print(f, file=open('out2.txt','w'))
         else:
-            print f
+            print(f)
         #pprint.PrettyPrinter().pprint(f.localizedStrings)
         #pprint.PrettyPrinter().pprint(f.entriesByNameAndType)
         #f.toFile(open(sys.argv[1] + '.copy','w'),0)        
@@ -665,4 +677,4 @@ if __name__ == "__main__":
         #pprint.PrettyPrinter().pprint(f.localizedStrings)
         #pprint.PrettyPrinter().pprint(f.entriesByNameAndType)
     else:
-        print 'usage:',sys.argv[0],'<filename>'
+        print('usage:',sys.argv[0],'<filename>')

@@ -2,6 +2,7 @@
 import string
 
 import wx
+import os
 
 from neveredit.game.Palette import Palette
 from neveredit.ui import WxUtils
@@ -34,8 +35,9 @@ class PaletteWindow(wx.TreeCtrl):
     def fromPaletteHelper(self,parentNode,childSpecs):
         for r in childSpecs:
             r.childrenReady = False
-            node = self.AppendItem(parentNode,r.getName())
-            self.SetPyData(node,r)
+            label = r.getName() or '<unnamed>'
+            node = self.AppendItem(parentNode,label)
+            self.SetItemData(node,r)
             image = r.getImage()
             if image:
                 image = image.crop((0,0,16,26))
@@ -46,21 +48,21 @@ class PaletteWindow(wx.TreeCtrl):
 
     def itemExpanding(self,event):
         item = event.GetItem()
-        data = self.GetPyData(item)
+        data = self.GetItemData(item)
         if data and not data.childrenReady:
             self.fromPaletteHelper(item,data.getChildren())
             data.childrenReady = True
 
     def selectionChanging(self,event):
         if event.GetItem().IsOk() and\
-           self.GetPyData(event.GetItem()) and\
-           not self.GetPyData(event.GetItem()).getBlueprint():
+           self.GetItemData(event.GetItem()) and\
+           not self.GetItemData(event.GetItem()).getBlueprint():
             event.Veto()
             
     def supplyToolTip(self,event):
         if event.GetItem().IsOk() and\
-           self.GetPyData(event.GetItem()):
-            bp = self.GetPyData(event.GetItem()).getBlueprint()
+           self.GetItemData(event.GetItem()):
+            bp = self.GetItemData(event.GetItem()).getBlueprint()
             if bp:                
                 event.SetToolTip(bp.getDescription())
     
@@ -107,7 +109,9 @@ class ToolSelectionEvent(wx.PyCommandEvent):
         return self.tooltype
     
     def Clone(self):
-        self.__class__(self.GetId(),self.tooltype)
+        clone = self.__class__(self.GetId(),self.tooltype)
+        clone.data = self.data
+        return clone
 
 SELECTION_TOOL = wx.NewId()
 ROTATE_TOOL = wx.NewId()
@@ -115,34 +119,45 @@ PAINT_TOOL = wx.NewId()
 
 class ToolFrame(wx.MiniFrame):
     def __init__(self):
-        import Image,WxUtils
-        wx.MiniFrame.__init__(self,None,-1,"Tools",(805,25),(300,600))
+        from PIL import Image
+        from neveredit.ui import WxUtils
+        try:
+            ui_scale = float(os.environ.get('NEVEREDIT_UI_SCALE', '1.25'))
+        except (TypeError, ValueError):
+            ui_scale = 1.25
+        ui_scale = max(1.0, ui_scale)
+        pos = (int(805 * ui_scale), int(25 * ui_scale))
+        size = (int(340 * ui_scale), int(680 * ui_scale))
+        wx.MiniFrame.__init__(self,None,-1,"Tools",pos,size)
         self.SetBackgroundColour('WHITE')
         self.CreateStatusBar()
         self.toolbar = self.CreateToolBar(wx.TB_FLAT | wx.NO_BORDER | wx.TB_HORIZONTAL)
         self.toolbar.SetBackgroundColour(wx.WHITE)
         self.toolbar.SetToolBitmapSize((26,24))
         self.selectId = SELECTION_TOOL
-        self.toolbar.AddRadioLabelTool(self.selectId,
-                                       "Select/Move",
-                                       select_icon_png.getBitmap(),
-                                       select_icon_sel_png.getBitmap(),
-                                       shortHelp=('Select Object'),
-                                       longHelp='Select and Move objects on Map')
+        self.toolbar.AddTool(self.selectId,
+                     "Select/Move",
+                     select_icon_png.getBitmap(),
+                     select_icon_sel_png.getBitmap(),
+                     kind=wx.ITEM_RADIO,
+                     shortHelp=('Select Object'),
+                     longHelp='Select and Move objects on Map')
         self.paintId = PAINT_TOOL        
-        self.toolbar.AddRadioLabelTool(self.paintId,
-                                       "Paint",
-                                       paint_icon_png.getBitmap(),
-                                       paint_icon_sel_png.getBitmap(),
-                                       shortHelp='Paint Objects',
-                                       longHelp='Paint selected objects onto Map Display')
+        self.toolbar.AddTool(self.paintId,
+                     "Paint",
+                     paint_icon_png.getBitmap(),
+                     paint_icon_sel_png.getBitmap(),
+                     kind=wx.ITEM_RADIO,
+                     shortHelp='Paint Objects',
+                     longHelp='Paint selected objects onto Map Display')
         self.rotateId = ROTATE_TOOL        
-        self.toolbar.AddRadioLabelTool(self.rotateId,
-                                       "Rotate",
-                                       rotate_icon_png.getBitmap(),
-                                       rotate_icon_sel_png.getBitmap(),
-                                       shortHelp=('Rotate Object'),
-                                       longHelp=('Rotate object shown on Map'))
+        self.toolbar.AddTool(self.rotateId,
+                     "Rotate",
+                     rotate_icon_png.getBitmap(),
+                     rotate_icon_sel_png.getBitmap(),
+                     kind=wx.ITEM_RADIO,
+                     shortHelp=('Rotate Object'),
+                     longHelp=('Rotate object shown on Map'))
         self.Bind(wx.EVT_TOOL,self.toolSelected)
         self.toolbar.AddSeparator()
         self.toolbar.Realize()
@@ -155,7 +170,7 @@ class ToolFrame(wx.MiniFrame):
                                     [Palette.getStandardPalette(ptype)
                                      for ptype in sublist]))
         self.notebook = wx.Notebook(self,-1,style=wx.NB_LEFT)
-        for type,palette in self.stdPalettes.iteritems():
+        for type,palette in self.stdPalettes.items():
             pw = PaletteWindow(self.notebook,-1)
             pw.fromPalette(palette)
             self.notebook.AddPage(pw,type)
@@ -184,13 +199,13 @@ class ToolFrame(wx.MiniFrame):
         self.GetEventHandler().AddPendingEvent(newEvent)        
             
     def treeItemSelected(self,event):
-        if self.getActivePaletteWindow().GetPyData(event.GetItem()):
+        if self.getActivePaletteWindow().GetItemData(event.GetItem()):
             self.toggleToolOn(self.paintId)
         event.Skip()
 
     def getSelectedBlueprint(self):
         palette = self.getActivePaletteWindow()
-        data = palette.GetPyData(palette.GetSelection())
+        data = palette.GetItemData(palette.GetSelection())
         if data:
             return data.getBlueprint()
         

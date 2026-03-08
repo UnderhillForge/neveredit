@@ -37,7 +37,7 @@ class ModelWindow(GLWindow, VisualChangeListener):
         
     def DrawGLScene(self):
         GLWindow.DrawGLScene(self)
-        self.SetCurrent()
+        self.makeCurrent()
         if not self.model or not self.preprocessed:
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
             self.SwapBuffers()
@@ -55,12 +55,12 @@ class ModelWindow(GLWindow, VisualChangeListener):
             self.SwapBuffers()
             
         except KeyboardInterrupt:
-            print 'shutting down'
+            print('shutting down')
             sys.exit()
 
     def preprocess(self):        
         if self.model:
-            self.SetCurrent()
+            self.makeCurrent()
             self.preprocessNodes(self.model,'modelviewer',bbox=True)
             self.lookingAtZ = (self.model.boundingBox[1][2] -
                                self.model.boundingBox[0][2])/2.0
@@ -106,6 +106,6 @@ def run(args):
 # Print message to console, and kick off the main to get it rolling.
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print 'usage: ' + sys.argv[0] + ' <modelfile>'
+        print('usage: ' + sys.argv[0] + ' <modelfile>')
         sys.exit(1)
     run(sys.argv[1:])

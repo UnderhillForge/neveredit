@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 '''neveredit now includes a command line tool for nwn resource listing and extraction.
 
 Assuming the file is executable (otherwise make it so), run it as
@@ -33,18 +33,35 @@ import sys
 import os,os.path
 from optparse import OptionParser
 
+
+def add_local_venv_sitepackages():
+    """Add .venv site-packages to sys.path when launching with system Python."""
+    base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+    venv_lib = os.path.join(base_dir, '.venv', 'lib')
+    if not os.path.isdir(venv_lib):
+        return
+    for entry in os.listdir(venv_lib):
+        if not entry.startswith('python'):
+            continue
+        site_packages = os.path.join(venv_lib, entry, 'site-packages')
+        if os.path.isdir(site_packages) and site_packages not in sys.path:
+            sys.path.insert(0, site_packages)
+
+
+add_local_venv_sitepackages()
+
 def reexec_with_pythonw():
     if sys.platform == 'darwin' and\
            not sys.executable.endswith('MacOS/Python'):
-        print >>sys.stderr,'re-executing using pythonw'
+        print('re-executing using pythonw', file=sys.stderr)
         os.execvp('pythonw',['pythonw',__file__] + sys.argv[1:])
 
 def lookup(extensions):
     global r
     for e in extensions:
-        print >> sys.stderr,'resources with extension "' + e.upper() + '":'
+        print('resources with extension "' + e.upper() + '":', file=sys.stderr)
         for k in r.getKeysWithExtensions(e.upper()):
-            print >> outfile,ResourceManager.ResourceManager.nameFromKey(k)
+            print(ResourceManager.ResourceManager.nameFromKey(k), file=outfile)
 
 
 def getNeverDir(path):
@@ -59,6 +76,9 @@ def getNeverDir(path):
     return path
 
 commands = ['lookup','get','print','strref','extract','setpref']
+
+# Ensure local project import path is available before first neveredit import.
+sys.path.insert(0, getNeverDir(os.path.abspath(os.path.dirname(__file__))))
 
 if __name__ == "__main__":
     try:
@@ -95,15 +115,15 @@ if __name__ == "__main__":
                 from neveredit.util import neverglobals
                 from neveredit.game import ResourceManager
             except ImportError:
-                print sys.exc_info()[1]
-                print sys.path
-                print >>sys.stderr,'Faulty neveredit installation: could not import classes'
+                print(sys.exc_info()[1])
+                print(sys.path)
+                print('Faulty neveredit installation: could not import classes', file=sys.stderr)
                 sys.exit(1)
 
 
         outfile = sys.stdout
         if(len(args) == 0) or not args[0] in commands:
-            print '''possible commands are: lookup get print
+            print('''possible commands are: lookup get print
             "lookup" takes a list of extensions and prints all known
             resources with those extensions
             "get" retrieves a resource in raw format
@@ -111,12 +131,12 @@ if __name__ == "__main__":
             "strref" looks up and prints a string ref in dialog.tlk (hex allowed))
             "extract" takes an ERF file and dumps its contents to the current working dir
             "setpref" set a preference value for neveredit
-            use the "-h" switch to get a list of options'''
+            use the "-h" switch to get a list of options''')
         else:
             command = args[0]
             if command == 'extract':
                 if not len(args) > 1:
-                    print >>sys.stderr,'need an ERF file name for extraction'
+                    print('need an ERF file name for extraction', file=sys.stderr)
                     sys.exit(1)
                 f = ERFFile()
                 f.fromFile(args[1])
@@ -127,24 +147,24 @@ if __name__ == "__main__":
                 r.addMODFile(options.module)
             if command == 'lookup':
                 if len(args) == 1:
-                    print 'lookup requires a list of extensions'
+                    print('lookup requires a list of extensions')
                 else:
                     lookup(args[1:])
             elif command == 'get' or command == 'print':
                 if len(args) == 1:
-                    print 'require key in form resref.ext'
+                    print('require key in form resref.ext')
                 else:
                     if command == 'print':
                         if options.outfile:
                             outfile = open(options.outfile,'w')
-                        print >> outfile,r.getResourceByName(args[1])
+                        print(r.getResourceByName(args[1]), file=outfile)
                     else:
                         if options.outfile:
                             outfile = open(options.outfile,'wb')
                         outfile.write(r.getRawResourceByName(args[1]))
             elif command == 'strref':
                 if len(args) == 1:
-                    print 'require strref as integer'
+                    print('require strref as integer')
                 else:
                     for numstr in args[1:]:
                         num = -1
@@ -152,14 +172,14 @@ if __name__ == "__main__":
                             num = int(numstr[2:],16)
                         else:
                             num = int(numstr)
-                        print >> outfile,r.getDialogString(num)
+                        print(r.getDialogString(num), file=outfile)
             elif command == 'setpref':
                 if not len(args) == 3:
-                    print >>sys.stderr,'need <key> and <value> for setpref'
+                    print('need <key> and <value> for setpref', file=sys.stderr)
                     sys.exit(1)
                 import neveredit.util.Preferences
                 p = neveredit.util.Preferences.getPreferences()
                 p[args[1]] = args[2]
                 
     except KeyboardInterrupt:
-        print >>sys.stderr,'\naborting...'
+        print('\naborting...', file=sys.stderr)

@@ -65,12 +65,27 @@ class Area (NeverData.NeverData):
     
     def __init__(self,erfFile,areaName):
         NeverData.NeverData.__init__(self)
-        self.name = areaName
-        area = erfFile.getEntryByNameAndExtension(areaName,'ARE')
+        if isinstance(areaName, bytes):
+            area_name_bytes = areaName.rstrip(b'\0')
+            area_name_text = area_name_bytes.decode('latin1', 'ignore')
+        else:
+            area_name_text = str(areaName).strip('\0')
+            area_name_bytes = area_name_text.encode('latin1', 'ignore')
+
+        self.name = area_name_text
+        area = erfFile.getEntryByNameAndExtension(area_name_text,'ARE')
         if not area:
-            raise RuntimeError("couldn't find area for " + areaName)
-        git = erfFile.getEntryByNameAndExtension(areaName,'GIT')
-        gic = erfFile.getEntryByNameAndExtension(areaName,'GIC')
+            area = erfFile.getEntryByNameAndExtension(area_name_bytes,'ARE')
+        if not area:
+            raise RuntimeError("couldn't find area for " + area_name_text)
+
+        git = erfFile.getEntryByNameAndExtension(area_name_text,'GIT')
+        if not git:
+            git = erfFile.getEntryByNameAndExtension(area_name_bytes,'GIT')
+
+        gic = erfFile.getEntryByNameAndExtension(area_name_text,'GIC')
+        if not gic:
+            gic = erfFile.getEntryByNameAndExtension(area_name_bytes,'GIC')
         
         self.addPropList('are',self.arePropList,
                          erfFile.getEntryContents(area).getRoot())
@@ -87,16 +102,27 @@ class Area (NeverData.NeverData):
         
     def readContents(self):
         if self.creatureList == None:
-            creatures = self.gffstructDict['git'].getInterpretedEntry('Creature List')
+            creatures = self.gffstructDict['git'].getInterpretedEntry('Creature List') or []
             self.creatureList = [CreatureInstance(creature) for creature in creatures]
-            doors = self.gffstructDict['git'].getInterpretedEntry('Door List')
+            doors = self.gffstructDict['git'].getInterpretedEntry('Door List') or []
             self.doorList = [DoorInstance(door) for door in doors]
-            placeables = self.gffstructDict['git'].getInterpretedEntry('Placeable List')
+            placeables = self.gffstructDict['git'].getInterpretedEntry('Placeable List') or []
             self.placeableList = [PlaceableInstance(placeable) for placeable in placeables]
-            items = self.gffstructDict['git'].getInterpretedEntry('List')
+            items = self.gffstructDict['git'].getInterpretedEntry('List') or []
             self.itemList = [ItemInstance(item) for item in items]
-            waypoints = self.gffstructDict['git'].getInterpretedEntry('WaypointList')
+            waypoints = self.gffstructDict['git'].getInterpretedEntry('WaypointList') or []
             self.waypointList = [WayPointInstance(waypoint) for waypoint in waypoints]
+
+    def _ensureGitList(self, label):
+        git = self.gffstructDict['git']
+        value = git.getInterpretedEntry(label)
+        if value is not None:
+            return value
+        if git.hasEntry(label):
+            git.setInterpretedEntry(label, [])
+        else:
+            git.add(label, [], 'List')
+        return git.getInterpretedEntry(label) or []
 
     def discardContents(self):
         self.creatureList = None
@@ -157,29 +183,36 @@ class Area (NeverData.NeverData):
         return self.waypointList
 
     def addThing(self,thing):
-        logger.info('trying to add thing ' + `thing.getNevereditId()` + ' (class ' + `thing.__class__` + ') to area')
+        logger.info('trying to add thing ' + repr(thing.getNevereditId()) + ' (class ' + repr(thing.__class__) + ') to area')
         gff = thing.getMainGFFStruct()
         if not gff:
-            logger.error("could'nt get a main GFF struct for " + `thing` + ' - not added.')
-            return        
-        if thing.__class__ == CreatureInstance:
-            self['Creature List'].append(gff)
+            logger.error("could'nt get a main GFF struct for " + repr(thing) + ' - not added.')
+            return
+        self.readContents()
+        if isinstance(thing, CreatureInstance):
+            self._ensureGitList('Creature List').append(gff)
             self.creatureList.append(thing)
-        elif thing.__class__ == ItemInstance:
-            self['List'].append(gff)
+        elif isinstance(thing, ItemInstance):
+            self._ensureGitList('List').append(gff)
             self.itemList.append(thing)
-        elif thing.__class__ == DoorInstance:
-            self['Door List'].append(gff)
+        elif isinstance(thing, DoorInstance):
+            self._ensureGitList('Door List').append(gff)
             self.doorList.append(thing)
-        elif thing.__class__ == PlaceableInstance:
-            self['Placeable List'].append(gff)
+        elif isinstance(thing, PlaceableInstance):
+            self._ensureGitList('Placeable List').append(gff)
             self.placeableList.append(thing)
-        elif thing.__class__ == WayPointInstance:
-            self['WaypointList'].append(gff)
+        elif isinstance(thing, WayPointInstance):
+            self._ensureGitList('WaypointList').append(gff)
             self.waypointList.append(thing)
         
     def getTileSet(self):
         resref = self.gffstructDict['are'].getInterpretedEntry('Tileset')
+        if isinstance(resref, bytes):
+            resref = resref.rstrip(b'\0').decode('latin1', 'ignore')
+        elif resref is None:
+            resref = ''
+        else:
+            resref = str(resref).strip('\0')
         name = resref + '.set'
         return neverglobals.getResourceManager().getResourceByName(name)
 
@@ -190,7 +223,13 @@ class Area (NeverData.NeverData):
         return self.tileList[y*self.getWidth()+x]
     
     def getName(self):
-        return self['Name'].getString()
+        name = self['Name'].getString()
+        if name and not str(name).startswith('StrRef '):
+            return name
+        tag = self['Tag']
+        if tag:
+            return tag
+        return self.name
 
     def getHeight(self):
         """

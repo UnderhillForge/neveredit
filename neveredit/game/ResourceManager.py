@@ -4,16 +4,14 @@ mechanisms and various resource name/key conversion functions."""
 
 #standard lib
 import os,os.path,sys
-import cStringIO
-from sets import Set
+import io
 import logging
+import colorsys
 logger = logging.getLogger("neveredit.game")
+Set = set
 
 #external lib
-import Image
-import TgaImagePlugin
-import JpegImagePlugin
-import BmpImagePlugin
+from PIL import Image
 
 #neveredit
 from neveredit.util.Progressor import Progressor
@@ -78,14 +76,28 @@ class ResourceManager(Progressor,VisualChangeNotifier,ResourceListChangeNotifier
         'PTM'     : 2065,
         'PTT'     : 2066}
 
-    RESOURCEEXTENSIONS = dict(zip(RESOURCETYPES.values(),RESOURCETYPES.keys()))
+    RESOURCEEXTENSIONS = dict(zip(list(RESOURCETYPES.values()),list(RESOURCETYPES.keys())))
 
     GFFFILETYPES = ['ARE','IFO','BIC','GIT','UTI','UTC','DLG','ITP','UTT',
                     'UTS','GFF','FAC','UTE','UTD','UTP','GIC','GUI','UTM',
                     'JRL','UTW','PTM','PTT']
 
     KEYFILES = ['chitin.key','patch.key','xp1.key','xp1patch.key',
-                'xp2.key','xp2patch.key']
+                'xp2.key','xp2patch.key',
+                'nwn_base.key','nwn_retail.key']
+
+    QUIET_MISSING_TGA_RESREFS = set(['deepwater', 'nonwalk', 'stone', 'w_stone', 'wood'])
+    # Fallback tint colors for PLT layers when no appearance-specific palette
+    # mapping is available in this legacy renderer.
+    PLT_LAYER_BASE = {
+        0: (214, 171, 136),  # skin
+        1: (86, 62, 44),     # hair
+        2: (150, 150, 165),  # metal1
+        3: (120, 90, 60),    # leather
+        4: (130, 130, 145),  # metal2
+        5: (92, 92, 124),    # minor
+        6: (128, 110, 90),   # major
+    }
     
     appDir = ''
 
@@ -102,22 +114,38 @@ class ResourceManager(Progressor,VisualChangeNotifier,ResourceListChangeNotifier
         VisualChangeNotifier.__init__(self)
         ResourceListChangeNotifier.__init__(self)
         self.cache = {}
+        self._missingResourceWarnings = set()
         self.clear()
         self.module = None
         
     def clear(self):
         '''Discard all info this resource manager has loaded.'''
+        self._missingResourceWarnings = set()
         self.keyResourceKeys = {}
         self.dirResourceKeys = {}
         self.hakResourceKeys = {}
         self.resourcesByType = {}
         self.hakFileNames = []
+        self.hakFilePaths = {}
+        self.hakDirectories = []
         self.mainDialogFile = None
         self.customTlkFile = None
         self.modMap = {}
         self.module = None
         self.BMUFileNames = []
         self.ambientSoundFileNames = []
+
+    def _logMissingResource(self, key):
+        if key in self._missingResourceWarnings:
+            return
+        self._missingResourceWarnings.add(key)
+
+        resref = ResourceManager.normalizeResRef(key[0]) if isinstance(key, tuple) and len(key) == 2 else ''
+        rtype = key[1] if isinstance(key, tuple) and len(key) == 2 else None
+        if rtype == self.RESOURCETYPES['TGA'] and resref in self.QUIET_MISSING_TGA_RESREFS:
+            logger.debug('optional tile texture not found for ' + repr(key))
+            return
+        logger.error('cannot find resource for ' + repr(key) + 'in any added lists')
 
     def resTypeFromExtension(cls,ext):
         '''Class method that converts a resource type into a string extension'''
@@ -130,9 +158,17 @@ class ResourceManager(Progressor,VisualChangeNotifier,ResourceListChangeNotifier
         try:
             return cls.RESOURCEEXTENSIONS[type]
         except KeyError:
-            logger.error('type ' + `type` + 'unknown resource type')
+            logger.error('type ' + repr(type) + 'unknown resource type')
             return 'UNK'
     extensionFromResType = classmethod(extensionFromResType)
+
+    def normalizeResRef(cls, raw):
+        if isinstance(raw, bytes):
+            # NWN resrefs are NUL-terminated in a fixed-width field.
+            # Truncate at the first NUL to ignore padding/garbage bytes.
+            return raw.split(b'\0', 1)[0].decode('latin1', 'ignore').strip().lower()
+        return str(raw).split('\0', 1)[0].strip().lower()
+    normalizeResRef = classmethod(normalizeResRef)
     
     def nameFromKey(cls,key):
         '''Class method that converts a key into a filename.
@@ -140,7 +176,7 @@ class ResourceManager(Progressor,VisualChangeNotifier,ResourceListChangeNotifier
                     (16 byte resref,numerical resource type tuple)
         @return: the corresponding filename with extension
         '''
-        return key[0].strip('\0') + '.' + cls.extensionFromResType(key[1])
+        return cls.normalizeResRef(key[0]) + '.' + cls.extensionFromResType(key[1])
     nameFromKey = classmethod(nameFromKey)
     
     def keyFromName(cls,name):
@@ -148,14 +184,46 @@ class ResourceManager(Progressor,VisualChangeNotifier,ResourceListChangeNotifier
         @param name: the filename (including extension) to convert
         @return: (16 byte resref,numerical resource type).'''
         parts = name.split('.')
-        k1 = parts[0] + (16-len(parts[0]))*'\0'    
+        resref = cls.normalizeResRef(parts[0])
+        k1 = resref[:16] + (16-len(resref[:16]))*'\0'
         try:
             k2 = cls.resTypeFromExtension(parts[1])
         except KeyError:
             #logger.error('unknown extension "' + parts[1].upper() + '"')
-            raise ValueError,'unknown nwn extension .' + parts[1]
+            raise ValueError('unknown nwn extension .' + parts[1])
         return (k1,k2)
     keyFromName = classmethod(keyFromName)
+
+    def _candidateResourceKeys(self, key):
+        """Return equivalent key spellings for tolerant lookups."""
+        if not isinstance(key, tuple) or len(key) != 2:
+            return [key]
+        resref, rtype = key
+        normalized = ResourceManager.normalizeResRef(resref)
+        text16 = (normalized[:16] + (16 - len(normalized[:16])) * '\0')
+        byte16 = text16.encode('latin1', 'ignore')
+
+        candidates = [key, (text16, rtype), (normalized, rtype)]
+        if isinstance(resref, bytes):
+            candidates.append((normalized.encode('latin1', 'ignore'), rtype))
+        else:
+            candidates.append((byte16, rtype))
+
+        unique = []
+        for candidate in candidates:
+            if candidate not in unique:
+                unique.append(candidate)
+        return unique
+
+    def _findProviderAndKey(self, key):
+        for candidate in self._candidateResourceKeys(key):
+            if candidate in self.hakResourceKeys:
+                return (self.hakResourceKeys[candidate], candidate)
+            if candidate in self.dirResourceKeys:
+                return (self.dirResourceKeys[candidate], candidate)
+            if candidate in self.keyResourceKeys:
+                return (self.keyResourceKeys[candidate], candidate)
+        return (None, None)
 
     def getResourceFromCache(self,key):
         """Return a cached resource based on its key.
@@ -193,59 +261,270 @@ class ResourceManager(Progressor,VisualChangeNotifier,ResourceListChangeNotifier
         resource = None
         if extension in ResourceManager.GFFFILETYPES:
             resource = neveredit.file.GFFFile.GFFFile()
-            resource.fromFile(cStringIO.StringIO(data),0)
+            resource.fromFile(io.BytesIO(data),0)
         elif extension == 'NSS':
+            if isinstance(data, bytes):
+                data = data.decode('latin1')
             resource = neveredit.game.Script\
                        .Script(ResourceManager.nameFromKey(key),data)
         elif extension == '2DA':
             resource = neveredit.file.TwoDAFile.TwoDAFile()
-            resource.fromFile(cStringIO.StringIO(data))
-        elif extension == 'TGA':
-            resource = Image.open(cStringIO.StringIO(data))
+            resource.fromFile(io.StringIO(data.decode('latin1')))
+        elif extension in ('TGA', 'DDS'):
+            resource = Image.open(io.BytesIO(data))
+        elif extension == 'PLT':
+            resource = self.decodePLT(data)
         elif extension == 'MDL':
             f = neveredit.file.MDLFile.MDLFile()
-            f.fromFile(cStringIO.StringIO(data))
+            f.fromFile(io.BytesIO(data))
             resource = f.getModel()
         elif extension == 'SET':
             resource = neveredit.file.TileSetFile.TileSetFile()
-            resource.fromFile(cStringIO.StringIO(data))
+            resource.fromFile(io.StringIO(data.decode('latin1')))
         else:
             return data
         self.addResourceToCache(key,resource)
         return resource
+
+    def decodePLT(self, data, tintContext=None):
+        """Decode NWN PLT (palette texture) into a displayable RGBA PIL image.
+
+        This is a conservative decoder intended for editor rendering fidelity.
+        It supports common 2-byte (layer,intensity) or (intensity,layer)
+        pixels, and a tolerant 3-byte variant with alpha.
+        """
+        if not data or len(data) < 16:
+            return None
+
+        try:
+            header = data[:4]
+            if header != b'PLT ':
+                return None
+
+            # NWN EE PLT commonly uses "PLT V1  " with width/height at 16/20
+            # and pixel payload starting at offset 24.
+            width = int.from_bytes(data[16:20], 'little', signed=False)
+            height = int.from_bytes(data[20:24], 'little', signed=False)
+            payload_offset = 24
+            if width <= 0 or height <= 0:
+                # Legacy fallback: some tools describe width/height at 8/12.
+                width = int.from_bytes(data[8:12], 'little', signed=False)
+                height = int.from_bytes(data[12:16], 'little', signed=False)
+                payload_offset = 16
+            if width <= 0 or height <= 0 or width > 4096 or height > 4096:
+                return None
+
+            payload = data[payload_offset:]
+            pixel_count = width * height
+            if pixel_count <= 0:
+                return None
+
+            bytes_per_pixel = 0
+            if len(payload) >= pixel_count * 2:
+                bytes_per_pixel = 2
+            if len(payload) >= pixel_count * 3 and (len(payload) % 3 == 0):
+                # Prefer exact 2-byte if both fit exactly.
+                if len(payload) != pixel_count * 2:
+                    bytes_per_pixel = 3
+            if bytes_per_pixel == 0:
+                return None
+
+            rgba = bytearray(pixel_count * 4)
+
+            if bytes_per_pixel == 2:
+                # Detect whether ordering is (layer,intensity) or reversed.
+                sample = payload[:min(len(payload), 4096)]
+                first_small = 0
+                second_small = 0
+                for i in range(0, len(sample) - 1, 2):
+                    if sample[i] <= 7:
+                        first_small += 1
+                    if sample[i + 1] <= 7:
+                        second_small += 1
+                layer_first = first_small >= second_small
+
+                for px in range(pixel_count):
+                    i = px * 2
+                    a = payload[i]
+                    b = payload[i + 1]
+                    if layer_first:
+                        layer, intensity = int(a), int(b)
+                    else:
+                        intensity, layer = int(a), int(b)
+                    r, g, bl, alpha = self._pltColor(layer, intensity, 255, tintContext)
+                    o = px * 4
+                    rgba[o] = r
+                    rgba[o + 1] = g
+                    rgba[o + 2] = bl
+                    rgba[o + 3] = alpha
+            else:
+                for px in range(pixel_count):
+                    i = px * 3
+                    layer = int(payload[i])
+                    intensity = int(payload[i + 1])
+                    alpha = int(payload[i + 2])
+                    r, g, bl, out_a = self._pltColor(layer, intensity, alpha, tintContext)
+                    o = px * 4
+                    rgba[o] = r
+                    rgba[o + 1] = g
+                    rgba[o + 2] = bl
+                    rgba[o + 3] = out_a
+
+            return Image.frombytes('RGBA', (width, height), bytes(rgba))
+        except Exception:
+            logger.debug('failed to decode PLT resource', exc_info=True)
+            return None
+
+    def _pltColor(self, layer, intensity, alpha, tintContext=None):
+        if layer >= 255:
+            return (0, 0, 0, 0)
+
+        i = max(0.0, min(1.0, float(intensity) / 255.0))
+        # Stretch contrast so low intensities retain visible detail.
+        shade = 0.25 + 0.75 * i
+        base = self._pltLayerBaseColour(layer, tintContext)
+        if base is None:
+            # Unknown/high layers are usually shadow/detail-like.
+            v = int(max(0.0, min(255.0, 35.0 + 200.0 * i)))
+            out_alpha = max(0, min(255, int(alpha)))
+            return (v, v, v, out_alpha)
+
+        r = int(max(0.0, min(255.0, base[0] * shade)))
+        g = int(max(0.0, min(255.0, base[1] * shade)))
+        b = int(max(0.0, min(255.0, base[2] * shade)))
+        out_alpha = max(0, min(255, int(alpha)))
+        return (r, g, b, out_alpha)
+
+    def _pltLayerBaseColour(self, layer, tintContext):
+        base = self.PLT_LAYER_BASE.get(layer)
+        if base is None or not tintContext:
+            return base
+
+        tint_index = self._pltTintIndexForLayer(layer, tintContext)
+        if tint_index is None:
+            return base
+
+        t = max(0.0, min(1.0, float(tint_index) / 255.0))
+        r = max(0.0, min(1.0, float(base[0]) / 255.0))
+        g = max(0.0, min(1.0, float(base[1]) / 255.0))
+        b = max(0.0, min(1.0, float(base[2]) / 255.0))
+        h, s, v = colorsys.rgb_to_hsv(r, g, b)
+
+        # Keep palettes layer-faithful while still reflecting tint selection.
+        hue_shift = (t - 0.5) * 0.16
+        h = (h + hue_shift) % 1.0
+        s = max(0.05, min(1.0, s * (0.75 + 0.45 * t)))
+        v = max(0.10, min(1.0, 0.35 + 0.60 * t))
+        rr, gg, bb = colorsys.hsv_to_rgb(h, s, v)
+        return (int(rr * 255.0), int(gg * 255.0), int(bb * 255.0))
+
+    def _pltTintIndexForLayer(self, layer, tintContext):
+        names = {
+            0: ('skin',),
+            1: ('hair',),
+            2: ('metal1',),
+            3: ('leather1', 'leather'),
+            4: ('metal2',),
+            5: ('minor', 'tattoo1'),
+            6: ('major', 'tattoo2'),
+        }.get(layer, ())
+
+        candidates = [layer]
+        candidates.extend(names)
+        for key in candidates:
+            if key not in tintContext:
+                continue
+            try:
+                value = int(tintContext[key])
+            except (TypeError, ValueError):
+                continue
+            if value >= 0:
+                return value
+        return None
     
     def scanGameDir(self,dirname):
         '''Scan an NWN install dir and store all the resource keys and
         hak files in it.
         @param dirname: the name of the directory to be scanned '''
-        print >>sys.stderr,'initializing resource manager from "',dirname,'"',
+        print('initializing resource manager from "',dirname,'"', end=' ', file=sys.stderr)
         sys.stderr.flush()
         self.clear()
-        self.setAppDir(dirname)
+
+        # Support NWN:EE layouts where key files live under a "data" subdir.
+        scan_dir = dirname
+        data_dir = os.path.join(dirname, 'data')
+        if os.path.isdir(data_dir):
+            legacy_key = os.path.join(dirname, 'chitin.key')
+            ee_key = os.path.join(data_dir, 'nwn_base.key')
+            if not os.path.exists(legacy_key) and os.path.exists(ee_key):
+                scan_dir = data_dir
+
+        self.setAppDir(scan_dir)
         if not os.path.exists(self.getAppDir()):
             logger.warning('dir given to resource manager does not exist')
             raise IOError("invalid path to NWN dir")
         c = 0.0
+        loaded_key_paths = Set()
         for f in ResourceManager.KEYFILES:
-            if os.path.exists(os.path.join(self.getAppDir(),f)):
-                print >>sys.stderr,'.',
+            key_path = os.path.join(self.getAppDir(),f)
+            if os.path.exists(key_path):
+                print('.', end=' ', file=sys.stderr)
                 sys.stderr.flush()
-                self.addKeyFile(os.path.join(self.getAppDir(),f))
+                self.addKeyFile(key_path)
+                loaded_key_paths.add(os.path.abspath(key_path))
                 c += 1
                 self.setProgress((c/len(ResourceManager.KEYFILES))*100.0)
+
+        # Fallback discovery for layouts with additional/nested key files.
+        for root, _dirs, files in os.walk(self.getAppDir()):
+            for filename in files:
+                if not filename.lower().endswith('.key'):
+                    continue
+                key_path = os.path.abspath(os.path.join(root, filename))
+                if key_path in loaded_key_paths:
+                    continue
+                try:
+                    self.addKeyFile(key_path)
+                    loaded_key_paths.add(key_path)
+                except Exception:
+                    logger.warning('skipping unreadable key file: %s', key_path)
+        def _try_load_main_tlk(path):
+            if not path or not os.path.exists(path):
+                return False
+            try:
+                tt = neveredit.file.TalkTableFile.TalkTableFile()
+                tt.fromFile(path)
+                self.mainDialogFile = tt
+                logger.info('loaded main dialog TLK: %s', path)
+                return True
+            except Exception:
+                logger.warning('failed loading TLK file: %s', path)
+                return False
+
         files = os.listdir(self.getAppDir())
         for f in files:
             if f == 'dialog.tlk':
-                self.mainDialogFile = neveredit.file\
-                                      .TalkTableFile.TalkTableFile()
-                self.mainDialogFile.fromFile(os.path.join(self.getAppDir(),f))
+                _try_load_main_tlk(os.path.join(self.getAppDir(),f))
+            elif f == 'tlk':
+                # NWN:EE stores TLK files in a dedicated tlk/ folder.
+                tlk_dir = os.path.join(self.getAppDir(), f)
+                if os.path.isdir(tlk_dir):
+                    tlk_candidates = ['dialog.tlk']
+                    for candidate in tlk_candidates:
+                        candidate_path = os.path.join(tlk_dir, candidate)
+                        if _try_load_main_tlk(candidate_path):
+                            break
             if f == 'override':
                 for over in os.listdir(os.path.join(self.getAppDir(),f)):
                     pass #should add override files here
-            if f == 'hak':
-                for hak in os.listdir(os.path.join(self.getAppDir(),f)):
-                    if hak[-4:] == '.hak':
-                        self.hakFileNames.append(hak)
+            if f in ('hak', 'hk'):
+                hak_dir = os.path.join(self.getAppDir(), f)
+                if os.path.isdir(hak_dir):
+                    self.hakDirectories.append(hak_dir)
+                    for hak in os.listdir(hak_dir):
+                        if hak.lower().endswith('.hak'):
+                            self.hakFileNames.append(hak)
+                            self.hakFilePaths.setdefault(hak.lower(), os.path.join(hak_dir, hak))
             if f == 'modules':
                 for mod in os.listdir(os.path.join(self.getAppDir(),f)):
                     if mod[-4:] == '.mod':
@@ -259,8 +538,27 @@ class ResourceManager(Progressor,VisualChangeNotifier,ResourceListChangeNotifier
                 for ambsound in os.listdir(os.path.join(self.getAppDir(),f)):
                     if ambsound[-4:] == '.wav':
                         self.ambientSoundFileNames.append(ambsound)
+
+        if not self.mainDialogFile:
+            # NWN:EE often stores dialog.tlk under lang/<locale>/data.
+            tlk_search_paths = [
+                os.path.join(dirname, 'lang', 'en', 'data', 'dialog.tlk'),
+                os.path.join(dirname, 'data', 'tlk', 'dialog.tlk'),
+            ]
+            lang_dir = os.path.join(dirname, 'lang')
+            if os.path.isdir(lang_dir):
+                for locale in os.listdir(lang_dir):
+                    tlk_search_paths.append(
+                        os.path.join(lang_dir, locale, 'data', 'dialog.tlk')
+                    )
+            # Last resort for installs missing dialog.tlk.
+            tlk_search_paths.append(os.path.join(dirname, 'data', 'tlk', 'dla_bio.tlk'))
+            for tlk_path in tlk_search_paths:
+                if _try_load_main_tlk(tlk_path):
+                    break
+
         self.setProgress(0)
-        print >>sys.stderr
+        print(file=sys.stderr)
         if not self.mainDialogFile:
             logger.warning('"' + self.getAppDir() +
                            '"' + " does not look like a valid NWN dir")
@@ -268,13 +566,20 @@ class ResourceManager(Progressor,VisualChangeNotifier,ResourceListChangeNotifier
     def getDialogString(self,strref):
         '''look up a strref in dialog.tlk and return as a python string'''
         if not self.mainDialogFile:
-            print >>sys.stderr,'not initialized, cannot return dialog string'
+            print('not initialized, cannot return dialog string', file=sys.stderr)
             return None
         else:
+            if strref is None:
+                return None
+            try:
+                strref = int(strref)
+            except (TypeError, ValueError):
+                return None
+            strref &= 0xFFFFFFFF
             special = (strref & 0xFF000000) >> 24
             alternate = special & 0x01
             if alternate:
-                basevalue = (strref & 0xFF000000) ^ strref
+                basevalue = strref & 0x00FFFFFF
                 if self.customTlkFile:
                     ctlkstring = self.customTlkFile.getString(basevalue)
                     if not ctlkstring:
@@ -284,7 +589,7 @@ class ResourceManager(Progressor,VisualChangeNotifier,ResourceListChangeNotifier
                         return ctlkstring
                 else:
                     # then we should fall back to the main tlk string - according to Bioware
-                    return self.mainDialogFile.getString(strref)
+                    return self.mainDialogFile.getString(basevalue)
             else:
                 return self.mainDialogFile.getString(strref)
         
@@ -317,7 +622,18 @@ class ResourceManager(Progressor,VisualChangeNotifier,ResourceListChangeNotifier
                                + ' amongst installed haks')
             else:
                 hakName = self.hakFileNames[lowerHakNames.index(hak)]
-                self.addHAKFile(os.path.join(self.getAppDir(),'hak',hakName))
+                hakPath = self.hakFilePaths.get(hakName.lower())
+                if not hakPath:
+                    # Fallback for legacy behavior if no precomputed path exists.
+                    for hak_dir in self.hakDirectories:
+                        candidate = os.path.join(hak_dir, hakName)
+                        if os.path.exists(candidate):
+                            hakPath = candidate
+                            break
+                if hakPath:
+                    self.addHAKFile(hakPath)
+                else:
+                    logger.warning('Could not resolve hak path for %s', hakName)
                 
     def addKeyFile(self,keyf):
         keyFile = neveredit.file.KeyFile.KeyFile(self.getAppDir())
@@ -367,9 +683,9 @@ class ResourceManager(Progressor,VisualChangeNotifier,ResourceListChangeNotifier
             self.customTlkFile = None
 
     def buildResourceTable(self):
-        for key in self.hakResourceKeys.keys() +\
-            self.dirResourceKeys.keys() +\
-            self.keyResourceKeys.keys():
+        for key in list(self.hakResourceKeys.keys()) +\
+            list(self.dirResourceKeys.keys()) +\
+            list(self.keyResourceKeys.keys()):
             self.resourcesByType.setdefault(key[1],Set()).add(key)
             
     def cleanMODandHAKKeys(self):
@@ -379,15 +695,11 @@ class ResourceManager(Progressor,VisualChangeNotifier,ResourceListChangeNotifier
         self.clearCache()
         
     def getRawResource(self,key):
-        if key in self.hakResourceKeys:
-            return self.hakResourceKeys[key].getRawResource(key)
-        elif key in self.dirResourceKeys:
-            return self.dirResourceKeys[key].getRawResource(key)
-        elif key in self.keyResourceKeys:
-            return self.keyResourceKeys[key].getRawResource(key)
+        provider, lookupKey = self._findProviderAndKey(key)
+        if provider:
+            return provider.getRawResource(lookupKey)
         else:
-            logger.error('cannot find resource for ' + `key` +
-                         'in any added lists')
+            self._logMissingResource(key)
             return None
 
     def getRawResourceByName(self,name):        
@@ -395,22 +707,19 @@ class ResourceManager(Progressor,VisualChangeNotifier,ResourceListChangeNotifier
         return self.getRawResource(key)
 
     def getResource(self,key,copy=False):
-        r = self.getResourceFromCache(key)
+        provider, lookupKey = self._findProviderAndKey(key)
+        cacheKey = lookupKey or key
+        r = self.getResourceFromCache(cacheKey)
         if not copy and r:
             return r
         deleteCache = copy and not r
         resource = None
-        if key in self.hakResourceKeys:
-            resource = self.hakResourceKeys[key].getResource(key)
-        elif key in self.dirResourceKeys:
-            resource = self.dirResourceKeys[key].getResource(key)
-        elif key in self.keyResourceKeys:
-            resource = self.keyResourceKeys[key].getResource(key)
+        if provider:
+            resource = provider.getResource(lookupKey)
         else:
-            logger.error('cannot find resource for ' + `key` +
-                         'in any added lists')
+            self._logMissingResource(key)
         if resource and deleteCache:
-            del self.cache[key]
+            del self.cache[cacheKey]
         return resource
 
     def getResourceByName(self,name,copy=False):
@@ -420,10 +729,11 @@ class ResourceManager(Progressor,VisualChangeNotifier,ResourceListChangeNotifier
         return self.getResource(key,copy)
 
     def getKeysWithName(self,name):
+        normalized_name = ResourceManager.normalizeResRef(name)
         keys = []
-        for keySet in self.resourcesByType.values():
+        for keySet in list(self.resourcesByType.values()):
             keys.extend([key for key in keySet
-                         if key[0].strip('\0').lower() == name.lower()])
+                         if ResourceManager.normalizeResRef(key[0]) == normalized_name])
         return keys
     
     def getKeysWithType(self,type):
@@ -434,7 +744,12 @@ class ResourceManager(Progressor,VisualChangeNotifier,ResourceListChangeNotifier
 
     def getDirKeysWithExtensions(self,ext):
         keys = self.getKeysWithExtensions(ext)
-        return [k for k in keys if k in self.dirResourceKeys]
+        normalized = []
+        for resref, rtype in keys:
+            if (resref, rtype) not in self.dirResourceKeys:
+                continue
+            normalized.append((ResourceManager.normalizeResRef(resref), rtype))
+        return normalized
     
     def getTextScriptKeys(self):
         return self.getKeysWithExtensions('nss')
@@ -451,8 +766,8 @@ class ResourceManager(Progressor,VisualChangeNotifier,ResourceListChangeNotifier
         twoda = self.getResourceByName('portraits.2da')
         entry = twoda.getEntry(index,'BaseResRef').lower()
         if not entry or entry == '****':
-            logger.warning('empty portrait entry for ' + `index` + ' ' +
-                           `size`)
+            logger.warning('empty portrait entry for ' + repr(index) + ' ' +
+                           repr(size))
             return None
         name = 'po_' + entry + size + '.tga'
         return self.getResourceByName(name)
@@ -460,7 +775,8 @@ class ResourceManager(Progressor,VisualChangeNotifier,ResourceListChangeNotifier
     def getPortraitNameList(self):
         portraits = Set()
         for key in self.getKeysWithExtensions('TGA'):
-            if key[0][:3] == 'po_':
-                portraits.add(key[0].strip('\0')[:-1])
+            resref = ResourceManager.normalizeResRef(key[0])
+            if resref[:3] == 'po_':
+                portraits.add(resref[:-1])
         return list(portraits)
     

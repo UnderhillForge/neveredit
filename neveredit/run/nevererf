@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 '''
 a tar like command line util for erf files
 Currently, -c is still unimplemented.
@@ -22,17 +22,17 @@ def getNeverDir(path):
 def packArgs(erf,args):
     for a in args:
         if not os.path.exists(a):
-            print >>sys.stderr,'no such file or directory',a
+            print('no such file or directory',a, file=sys.stderr)
             sys.exit(1)
         if os.path.isdir(a) and options.recurse:
             packArgs(erf,[os.path.join(a,fname) for fname in os.listdir(a)])
         if os.path.isfile(a):
             try:
-                erf.addRawResourceByName(os.path.basename(a),file(a).read())
+                erf.addRawResourceByName(os.path.basename(a),open(a, 'rb').read())
                 if options.verbose:
-                    print a
+                    print(a)
             except:
-                print >>sys.stderr,"error trying to add " + a + ": " + str(sys.exc_info()[1])
+                print("error trying to add " + a + ": " + str(sys.exc_info()[1]), file=sys.stderr)
                 
 if __name__ == "__main__":
     try:
@@ -72,33 +72,33 @@ if __name__ == "__main__":
                 from neveredit.util import neverglobals
                 from neveredit.game import ResourceManager
             except ImportError:
-                print sys.exc_info()[1]
-                print sys.path
-                print >>sys.stderr,'Faulty neveredit installation: could not import classes'
+                print(sys.exc_info()[1])
+                print(sys.path)
+                print('Faulty neveredit installation: could not import classes', file=sys.stderr)
                 sys.exit(1)
 
         option_count = sum([o != None for o in [options.list,options.extract,options.create,options.info]])
         
         if option_count > 1:
-            print >>sys.stderr,'can only specify one of create (-c), extract (-x), list (-t) or info (-i)'
+            print('can only specify one of create (-c), extract (-x), list (-t) or info (-i)', file=sys.stderr)
             sys.exit(1)
         if not option_count:
-            print >>sys.stderr,'must specify one of create (-c), extract (-x) or list (-t)'
+            print('must specify one of create (-c), extract (-x) or list (-t)', file=sys.stderr)
             sys.exit(1)
         if not options.file:
-            print >>sys.stderr,'must specify erf file argument (-f/--file)'
+            print('must specify erf file argument (-f/--file)', file=sys.stderr)
             sys.exit(1)
             
         if options.info:
             if not os.path.exists(options.file):
-                print >>sys.stderr,"can't find erf file: " + options.file
+                print("can't find erf file: " + options.file, file=sys.stderr)
                 sys.exit(1)
             f = ERFFile()
             f.fromFile(options.file)
-            print f.infoStr()
+            print(f.infoStr())
         elif options.extract:
             if not os.path.exists(options.file):
-                print >>sys.stderr,"can't find erf file: " + options.file
+                print("can't find erf file: " + options.file, file=sys.stderr)
                 sys.exit(1)
             f = ERFFile()
             f.fromFile(options.file)
@@ -107,26 +107,26 @@ if __name__ == "__main__":
             else:
                 for resource in args:
                     if options.verbose:
-                        print resource
+                        print(resource)
                     try:
                         f.extractEntry(resource)
                     except:
-                        print >>sys.stderr,'error extracting "' + resource + '" from erf file.'
+                        print('error extracting "' + resource + '" from erf file.', file=sys.stderr)
         elif options.create:
             ext = os.path.splitext(options.file)[1][1:].upper()
             if ext not in ["ERF","MOD","SAV","HAK"]:
-                print >>sys.stderr,"Cannot determine erf type from extension, will use 'ERF'"
+                print("Cannot determine erf type from extension, will use 'ERF'", file=sys.stderr)
                 ext = "ERF"
             erf = ERFFile(ext)
             packArgs(erf,args)
             erf.toFile(options.file)
         elif options.list:
             if not os.path.exists(options.file):
-                print >>sys.stderr,"can't find erf file: " + options.file
+                print("can't find erf file: " + options.file, file=sys.stderr)
                 sys.exit(1)
             f = ERFFile()
             f.fromFile(options.file)
             for key in f.getKeyList():
-                print ResourceManager.ResourceManager.nameFromKey(key).lower()
+                print(ResourceManager.ResourceManager.nameFromKey(key).lower())
     except KeyboardInterrupt:
-        print >>sys.stderr,'\naborting...'
+        print('\naborting...', file=sys.stderr)

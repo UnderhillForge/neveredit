@@ -6,7 +6,7 @@ import sets
 import wx
 import wx.lib.ogl as ogl
 import wx.lib.mixins.listctrl  as  listmix
-import Image
+from PIL import Image
 
 from neveredit.ui import WxUtils
 from neveredit.game.Tile import Tile
@@ -21,7 +21,7 @@ class TileShape(ogl.BitmapShape):
         self.tile = t
         tile = t.get2DTile()
         if not tile:
-            logger.warning('no 2D tile for' + `tile`)
+            logger.warning('no 2D tile for' + repr(tile))
         else:
             tile = Utils.resizeSquareImage(tile,self.tilesize)
             tile = tile.rotate(t.getBearing())
@@ -57,11 +57,11 @@ class ShapeEventHandler(ogl.ShapeEvtHandler):
                     s.Select(False, dc)
         shape.Select(True, dc)
         canvas.Redraw(dc)
-        print 'orientation:',self.GetShape().getTile().getBearing()
+        print('orientation:',self.GetShape().getTile().getBearing())
         for c in Tile.CORNERS:
-            print c,self.GetShape().getTile().getCornerType(c)
+            print(c,self.GetShape().getTile().getCornerType(c))
         for c in Tile.SIDES:
-            print c,self.GetShape().getTile().getSideType(c)
+            print(c,self.GetShape().getTile().getSideType(c))
         self.parent.selected(shape)
         
 class TileListCtrl(wx.ListCtrl, listmix.ListCtrlAutoWidthMixin):
@@ -152,7 +152,7 @@ class TilingWindow(wx.Panel):
                     for angle in [90,180,270]:
                         twodtileRotated = twodtile.rotate(angle)
                         index = self.tileImageList.Add(WxUtils.bitmapFromImage(twodtileRotated))
-                        self.tileImageMap[imageName + '.' + `angle`] = index
+                        self.tileImageMap[imageName + '.' + repr(angle)] = index
         self.tileListCtrl.ClearAll()
         self.tileListCtrl.SetImageList(self.tileImageList,wx.IMAGE_LIST_NORMAL)
         self.tileListCtrl.SetImageList(self.tileImageList,wx.IMAGE_LIST_SMALL)
@@ -169,7 +169,7 @@ class TilingWindow(wx.Panel):
                                                     t.getName(),
                                                     self.tileImageMap[t.get2DImageName()
                                                                       + '.'
-                                                                      + `int(t.getBearing())`])
+                                                                      + repr(int(t.getBearing()))])
         
     def selected(self,shape):
         self.modelWindow.setModel(shape.getTile().getModel())
@@ -204,7 +204,7 @@ class TilingWindow(wx.Panel):
                     for angle in [0,90,180,270]:
                         rotTile = self.area.getTileSet().makeNewTile(t.getId())
                         rotTile.rotate(angle)
-                        tilekey = `rotTile.getId()` + '.' + `angle`
+                        tilekey = repr(rotTile.getId()) + '.' + repr(angle)
                         if xdiff == ydiff == -1:
                             if rotTile.canPlaceRelativeTo(placed,direction):
                                 goodtiles[tilekey] = rotTile
@@ -212,7 +212,7 @@ class TilingWindow(wx.Panel):
                             if not rotTile.canPlaceRelativeTo(placed,direction) and\
                                    tilekey in goodtiles:
                                 del goodtiles[tilekey]
-        self.updateTileListCtrl(goodtiles.values())
+        self.updateTileListCtrl(list(goodtiles.values()))
                 
                 
 def run(args):

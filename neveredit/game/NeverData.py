@@ -90,8 +90,8 @@ class NeverData:
         '''Add a property list dictionary and a gff struct under
         the given name.'''
         if name in self.gffstructDict:
-            print 'warning, gff struct dict with name',name,'already exists'
-            print self,self.propListDict[name]
+            print('warning, gff struct dict with name',name,'already exists')
+            print(self,self.propListDict[name])
             return
         self.propListDict[name] = plist
         self.gffstructDict[name] = gffstruct
@@ -117,7 +117,7 @@ class NeverData:
         @param label: the name of the property to return.
         @return: the property (an instance of L{NeverProperty}
         """
-        for name,plist in self.propListDict.iteritems():
+        for name,plist in self.propListDict.items():
             if label in plist:
                 return NeverProperty(label,
                                      self.gffstructDict[name].getInterpretedEntry(label),
@@ -125,21 +125,21 @@ class NeverData:
         else:
             #try the first one
             return NeverProperty(label,
-                                 self.gffstructDict.values()[0].getInterpretedEntry(label),
-                                 self.propListDict.values()[0].get(label,label))
+                                 list(self.gffstructDict.values())[0].getInterpretedEntry(label),
+                                 list(self.propListDict.values())[0].get(label,label))
 
     def setProperty(self,label,value):
-        for name,plist in self.propListDict.iteritems():
+        for name,plist in self.propListDict.items():
             if label in plist:
                 self.getGFFStruct(name).setInterpretedEntry(label,value)
                 break
         else:
             #try the first one
-            self.gffstructDict.values()[0].setInterpretedEntry(label,value)
+            list(self.gffstructDict.values())[0].setInterpretedEntry(label,value)
             
     def iterateProperties(self):
-        for name,plist in self.propListDict.iteritems():
-            plkeys = plist.keys()
+        for name,plist in self.propListDict.items():
+            plkeys = list(plist.keys())
             plkeys.sort()
             for label in plkeys:
                 yield NeverProperty(label,
@@ -147,7 +147,7 @@ class NeverData:
                                     plist[label])
 
     def hasProperty(self,label):
-        for plist in self.propListDict.values():
+        for plist in list(self.propListDict.values()):
             if label in plist:
                 return True
         return False
@@ -189,7 +189,7 @@ class LocatedNeverData(NeverData):
         @param copy: if True, return a copy of the model that is _not_ stored in the parent
                      class
         """
-        raise NotImplementedError('should not call getModel on base class' + `self`)
+        raise NotImplementedError('should not call getModel on base class' + repr(self))
 
     def forceModelReload(self):
         """
@@ -206,6 +206,6 @@ class NeverInstance(LocatedNeverData):
     def getBearing(self):
         """Return the placed tile's orientation in degrees.
         @return: tile orientation in degrees clockwise from North"""
-        raise NotImplementedError('should not call getBearing on base class: ' + `self`)
+        raise NotImplementedError('should not call getBearing on base class: ' + repr(self))
 
     

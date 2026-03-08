@@ -57,12 +57,19 @@ class SituatedObject(LocatedNeverData):
         return self['ObjectId']
 
     def getPortrait(self,size):
-        if self['Portrait']:
-            name = self['Portrait'].lower() + size + '.tga'
+        portrait = self['Portrait']
+        if portrait:
+            if isinstance(portrait, bytes):
+                portrait = portrait.rstrip(b'\0').decode('latin1', 'ignore')
+            else:
+                portrait = str(portrait).strip('\0')
+            name = portrait.lower() + size + '.tga'
             return neverglobals.getResourceManager().getResourceByName(name)
         twoda = neverglobals.getResourceManager()\
                 .getResourceByName('portraits.2da')
         baseResRef = twoda.getEntry(self['PortraitId'],'BaseResRef')
+        if isinstance(baseResRef, bytes):
+            baseResRef = baseResRef.rstrip(b'\0').decode('latin1', 'ignore')
         if not baseResRef or baseResRef == '****':
             return None
         return neverglobals.getResourceManager()\

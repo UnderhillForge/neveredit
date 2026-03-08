@@ -24,7 +24,7 @@ class NeverFile(Progressor):
 if __name__ == "__main__":
     if(len(sys.argv) == 2):
         f = NeverFile()
-        print 'reading file',sys.argv[1]
+        print('reading file',sys.argv[1])
         f.fromFile(sys.argv[1])
-        print 'file type is' + `f.type` + ' version ' + `f.version`
+        print('file type is' + repr(f.type) + ' version ' + repr(f.version))
 

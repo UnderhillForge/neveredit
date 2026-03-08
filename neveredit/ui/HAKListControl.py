@@ -51,17 +51,17 @@ class HAKListControl(wx.BoxSizer) :
         usedhaks_sizer.Add(self.used_haks)
 
         nonused_sizer.Add(self.unused_label,flag=wx.TOP)
-        nonused_sizer.Add(self.nonused_haks,flag=wx.ALIGN_BOTTOM)
+        nonused_sizer.Add(self.nonused_haks, flag=wx.EXPAND)
 
         exterior_sizer.Add(nonused_sizer,flag=wx.ALIGN_BOTTOM)
         exterior_sizer.Add(arrows_sizer,flag=wx.ALIGN_CENTER_VERTICAL)
         exterior_sizer.Add(usedhaks_sizer)
         exterior_sizer.Add(updown_sizer,flag=wx.ALIGN_CENTER_VERTICAL|wx.FIXED_MINSIZE)
 
-        wx.EVT_BUTTON(propWindow, self.to_used.GetId(), self.HAKAdd)
-        wx.EVT_BUTTON(propWindow, self.to_nonused.GetId(), self.HAKRemove)
-        wx.EVT_BUTTON(propWindow, self.up_button.GetId(), self.HAKMoveUp)
-        wx.EVT_BUTTON(propWindow, self.down_button.GetId(), self.HAKMoveDown)
+        self.to_used.Bind(wx.EVT_BUTTON, self.HAKAdd)
+        self.to_nonused.Bind(wx.EVT_BUTTON, self.HAKRemove)
+        self.up_button.Bind(wx.EVT_BUTTON, self.HAKMoveUp)
+        self.down_button.Bind(wx.EVT_BUTTON, self.HAKMoveDown)
 
         self.Add(exterior_sizer)
 
@@ -86,12 +86,12 @@ class HAKListControl(wx.BoxSizer) :
 
     def GetStringSelections(self):
         count = self.used_haks.GetCount()
-        haknames = map(self.used_haks.GetString,range(0,count))
+        haknames = list(map(self.used_haks.GetString,list(range(0,count))))
         return haknames
 
     def GetRejectedStrings(self):
         count = self.nonused_haks.GetCount()
-        rejects = map(self.nonused_haks.GetString,range(0,count))
+        rejects = list(map(self.nonused_haks.GetString,list(range(0,count))))
         return rejects
 
     def GetId(self) :
@@ -99,26 +99,26 @@ class HAKListControl(wx.BoxSizer) :
 
     def HAKAdd(self, event):
         indexes = self.nonused_haks.GetSelections()
-        selections = map(self.nonused_haks.GetString, indexes)
+        selections = list(map(self.nonused_haks.GetString, indexes))
         if len(selections)!=0:
 
             event.SetId(self.GetId())
             self.propWindow.controlUsed(event)
 
-            map(self.used_haks.Append,selections)
+            list(map(self.used_haks.Append,selections))
             for s in selections:
                 i = self.nonused_haks.FindString(s)
                 self.nonused_haks.Delete(i)
 
     def HAKRemove(self, event):
         indexes = self.used_haks.GetSelections()
-        selections = map(self.used_haks.GetString, indexes)
+        selections = list(map(self.used_haks.GetString, indexes))
         if len(selections)!=0:
 
             event.SetId(self.GetId())
             self.propWindow.controlUsed(event)
 
-            map(self.nonused_haks.Append,selections)
+            list(map(self.nonused_haks.Append,selections))
             for s in selections:
                 i = self.used_haks.FindString(s)
                 self.used_haks.Delete(i)

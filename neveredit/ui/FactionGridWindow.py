@@ -36,15 +36,15 @@ class FactionGridWindow(wx.Panel,PropertyChangeNotifier):
         main_sizer.Add(self.grid,flag=wx.ALL|wx.EXPAND,border=3)
         self.SetSizer(main_sizer)
 
-        wx.EVT_BUTTON(self,self.addBtn.GetId(),self.addFaction)
-        wx.EVT_BUTTON(self,self.delBtn.GetId(),self.delFaction)
+        self.addBtn.Bind(wx.EVT_BUTTON, self.addFaction)
+        self.delBtn.Bind(wx.EVT_BUTTON, self.delFaction)
 
         # while this is not done
         self.delBtn.Disable()
 
     def addFaction(self,event):
         name = self.choice.GetValue()
-        factions = map(lambda x:x.getName(),self.grid.FactionObject.factionList)
+        factions = [x.getName() for x in self.grid.FactionObject.factionList]
         if name not in factions:
             self.grid.FactionObject.addFaction(name)
             # simulate a tree selection change to redraw the faction window
@@ -52,7 +52,7 @@ class FactionGridWindow(wx.Panel,PropertyChangeNotifier):
 
     def delFaction(self,event):
         name = self.Choice.GetValue()
-        factions = map(lambda x:x.getName(),self.FactionObject.factionList)
+        factions = [x.getName() for x in self.FactionObject.factionList]
         if name in factions:
             pass
 
@@ -84,8 +84,8 @@ class FactionGrid(Grid):
         self.SetDefaultColSize(50)
         self.setLabels()
         self.setDataCells()
-        wx.grid.EVT_GRID_CELL_CHANGE(self,self.cellChanged)
-        wx.grid.EVT_GRID_SELECT_CELL(self,self.cellSelected)
+        self.Bind(wx.grid.EVT_GRID_CELL_CHANGED, self.cellChanged)
+        self.Bind(wx.grid.EVT_GRID_SELECT_CELL, self.cellSelected)
 
     def setLabels(self):
         for x in range(self.factionNumber):

@@ -36,8 +36,16 @@ class Placeable(SituatedObject):
             return self.model
         twoda = neverglobals.getResourceManager()\
                 .getResourceByName('placeables.2da')
-        index = self['Appearance']
-        self.modelName = twoda.getEntry(index,'ModelName').lower() + '.mdl'
+        try:
+            index = int(self['Appearance'])
+            if index < 0 or index >= twoda.getRowCount():
+                return None
+        except (TypeError, ValueError):
+            return None
+        model_name = twoda.getEntry(index,'ModelName')
+        if not model_name or model_name in ('****', 'NULL'):
+            return None
+        self.modelName = str(model_name).lower() + '.mdl'
         model = neverglobals.getResourceManager()\
                 .getResourceByName(self.modelName,copy)
         if not copy:
@@ -61,8 +69,8 @@ class PlaceableInstance(Placeable,SituatedObjectInstance):
     def __init__ (self, gffEntry):
         if gffEntry.getType() != PlaceableInstance.GFF_STRUCT_ID:
             logger.warning("created with gff struct type "
-                           + `gffEntry.getType()`
-                           + " should be " + `PlaceableInstance.GFF_STRUCT_ID`)
+                           + repr(gffEntry.getType())
+                           + " should be " + repr(PlaceableInstance.GFF_STRUCT_ID))
         SituatedObjectInstance.__init__ (self, gffEntry)
         Placeable.__init__ (self, gffEntry)
 

@@ -1,5 +1,6 @@
 import sys,string,math
 import copy
+import logging
 
 from neveredit.util import Utils
 Numeric = Utils.getNumPy()
@@ -12,6 +13,13 @@ from neveredit.openglcontext import utilities
 from neveredit.openglcontext import quaternion
 
 dataHandler = BinaryDataHandler.BinaryDataHandler()
+logger = logging.getLogger('neveredit.file')
+
+
+def _read_cstring(raw):
+    if isinstance(raw, bytes):
+        return raw.split(b'\0', 1)[0].decode('latin1', 'ignore')
+    return str(raw).split('\0', 1)[0]
 
 class GeometryHeader:
     def __init__(self):
@@ -23,8 +31,7 @@ class GeometryHeader:
 
     def fromFile(self,f):
         f.seek(8,1)
-        self.name = f.read(64)
-        self.name = self.name[:self.name.find('\0')]
+        self.name = _read_cstring(f.read(64))
         #print 'name:',self.name
         rootPointer = dataHandler.readUIntFile(f)
         self.rootNodeOffset = MDLFile.modelPointerToOffset(rootPointer)
@@ -85,7 +92,7 @@ class Controller:
              'selfillumcolor':100,
              'alpha':128
              }
-    numTypes = dict(zip(types.values(),types.keys()))
+    numTypes = dict(zip(list(types.values()),list(types.keys())))
      
     def __init__(self):
         self.data = []
@@ -111,7 +118,7 @@ class Controller:
         try:
             self.type = Controller.numTypes[t]
         except KeyError:
-            print 'warning, unknown node controller type',t            
+            print('warning, unknown node controller type',t)            
         self.numRows = dataHandler.readUWordFile(f)
         self.firstTimeIndex = dataHandler.readUWordFile(f)
         self.firstDataIndex = dataHandler.readUWordFile(f)
@@ -139,7 +146,11 @@ class Node:
         self.texture1 = None
         self.texture2 = None
         self.texture3 = None
-        self.flags = 0L
+        self.texture0resname = None
+        self.texture1resname = None
+        self.texture2resname = None
+        self.texture3resname = None
+        self.flags = 0
         self.name = ''
         self.children = []
         self.controllers = {}
@@ -158,12 +169,18 @@ class Node:
         self.inheritColour = None
         self.nodeNumber = None
         self.tm = None
+        self.indicesFromFaces = False
         
         self.parentGeomPointer = None
         self.parentNodePointer = None
         self.childrenArray = None
         self.controllerKeysArray = None
         self.controllerVArray = None
+        self.skinRawData = None
+        self.skinUInts = None
+        self.skinMeta = {}
+        self.skinWeights = None
+        self.skinBoneIds = None
         
     def getName(self):
         return self.name
@@ -174,6 +191,8 @@ class Node:
         self.headerFromFile(mdlFile)
         if self.hasMesh():
             self.meshHeaderFromFile(mdlFile)
+        if self.hasSkin():
+            self.skinHeaderFromFile(mdlFile)
         self.readChildren(mdlFile)
         self.readControllers(f)
             
@@ -182,8 +201,7 @@ class Node:
         f.seek(24,1)
         self.inheritColour = dataHandler.readUIntFile(f)
         self.nodeNumber = dataHandler.readUIntFile(f)
-        self.name = f.read(32)
-        self.name = self.name[:self.name.find('\0')]
+        self.name = _read_cstring(f.read(32))
         self.parentGeomPointer = dataHandler.readUIntFile(f)
         self.parentNodePointer = dataHandler.readUIntFile(f)
         self.childrenArray = MDLFile.arrayFromFile(f)
@@ -215,7 +233,7 @@ class Node:
                                                     self.controllerVArray.size)
         f.seek(self.controllerKeysArray.offset)
         self.controllers = {}
-        for i in xrange(self.controllerKeysArray.size):
+        for i in range(self.controllerKeysArray.size):
             c = Controller()
             c.fromFile(f,controllerData)
             self.addController(c)
@@ -247,18 +265,18 @@ class Node:
     
     def controllersAsString(self):
         strings = []
-        for cl in self.controllers.values():
+        for cl in list(self.controllers.values()):
             for c in cl:
                 strings.append(c.typeAsString())
-        return string.join(strings,'-')
+        return '-'.join(strings)
     
     def printNodeStructure(self):
-        print self.nodeStructureAsString()
+        print(self.nodeStructureAsString())
 
     def nodeStructureAsString(self):
         strings = []        
         self.nodeStructureAsStringHelper(strings)
-        return string.join(strings,'\n')
+        return '\n'.join(strings)
     
     def nodeStructureAsStringHelper(self,strings):
         strings.append((Node.indent*' ') + '"' + self.name
@@ -287,27 +305,19 @@ class Node:
          self.renderFlag,
          self.transparencyHint) = values[19:24]
         f.seek(4,1)
-        self.texture0name = f.read(64)
-        self.texture0name = self.texture0name[:self.texture0name.find('\0')]
+        self.texture0name = _read_cstring(f.read(64))
         r = neverglobals.getResourceManager()
         if self.texture0name and self.texture0name != 'NULL':
-            self.texture0 = r.getResourceByName(self.texture0name.lower()
-                                                + '.tga')
-        self.texture1name = f.read(64)
-        self.texture1name = self.texture1name[:self.texture1name.find('\0')]
+            self.texture0, self.texture0resname = self._resolveTextureResource(r, self.texture0name)
+        self.texture1name = _read_cstring(f.read(64))
         if self.texture1name and self.texture1name != 'NULL':
-            self.texture1 = r.getResourceByName(self.texture1name.lower()
-                                                + '.tga')
-        self.texture2name = f.read(64)
-        self.texture2name = self.texture2name[:self.texture2name.find('\0')]
+            self.texture1, self.texture1resname = self._resolveTextureResource(r, self.texture1name)
+        self.texture2name = _read_cstring(f.read(64))
         if self.texture2name and self.texture2name != 'NULL':
-            self.texture2 = r.getResourceByName(self.texture2name.lower()
-                                                + '.tga')
-        self.texture3name = f.read(64)
-        self.texture3name = self.texture3name[:self.texture3name.find('\0')]
+            self.texture2, self.texture2resname = self._resolveTextureResource(r, self.texture2name)
+        self.texture3name = _read_cstring(f.read(64))
         if self.texture3name and self.texture3name != 'NULL':
-            self.texture3 = r.getResourceByName(self.texture3name.lower()
-                                                + '.tga')
+            self.texture3, self.texture3resname = self._resolveTextureResource(r, self.texture3name)
         self.tileFade = dataHandler.readUIntFile(f)
         f.seek(24,1)
         self.vertexIndexCountArray = MDLFile.arrayFromFile(f)
@@ -323,45 +333,298 @@ class Node:
         self.texture2VertexDataPointer = dataHandler.readUIntFile(f)
         self.texture3VertexDataPointer = dataHandler.readUIntFile(f)
         self.vertexNormalDataPointer = dataHandler.readUIntFile(f)
+        mesh_struct_end = f.tell()
         
         self.processMeshData(mdlFile)
+        # Restore stream to end of mesh struct so contiguous optional blocks
+        # (skin/anim/dangly/aabb) can be parsed in-order from node data.
+        f.seek(mesh_struct_end)
+
+    def skinHeaderFromFile(self, mdlFile):
+        f = mdlFile.file
+        # NWN skin extension block is a fixed 0x64 bytes in binary node data.
+        raw = f.read(0x64)
+        if len(raw) != 0x64:
+            self.skinRawData = None
+            self.skinUInts = None
+            return
+        self.skinRawData = raw
+        self.skinUInts = dataHandler.readFromBuf('<25I', raw)
+        self.skinMeta = {}
+        self._extractSkinArrays(mdlFile)
+
+    def _readRawFloats(self, mdlFile, pointer, count):
+        if pointer in (None, 0xFFFFFFFF) or count <= 0:
+            return None
+        try:
+            offset = mdlFile.rawDataOffset + int(pointer) + 0xC
+            end = offset + (4 * int(count))
+            raw_limit = mdlFile.rawDataOffset + mdlFile.rawDataSize + 0xC
+            if offset < mdlFile.rawDataOffset or end > raw_limit:
+                return None
+            f = mdlFile.file
+            current = f.tell()
+            try:
+                f.seek(offset)
+                vals = dataHandler.readFloatsFile(f, int(count))
+            finally:
+                f.seek(current)
+            return Numeric.array(vals, 'f')
+        except Exception:
+            return None
+
+    def _extractSkinArrays(self, mdlFile):
+        # Heuristic extraction only: we keep this conservative and optional.
+        # Full semantic decoding of the skin block can be layered later.
+        if self.skinUInts is None or self.vertexCount <= 0:
+            return
+
+        vertex4 = int(self.vertexCount) * 4
+        candidates = []
+        vals = self.skinUInts
+        self.skinMeta['raw_uints'] = [int(v) for v in vals]
+        for i in range(len(vals) - 1):
+            ptr = int(vals[i])
+            cnt = int(vals[i + 1])
+            if ptr == 0xFFFFFFFF:
+                continue
+            if cnt <= 0 or cnt > vertex4:
+                continue
+            arr = self._readRawFloats(mdlFile, ptr, cnt)
+            if arr is None:
+                continue
+            candidates.append((i, ptr, cnt, arr))
+
+        self.skinMeta['candidate_pairs'] = [
+            {'pair_index': int(i), 'pointer': int(ptr), 'count': int(cnt)}
+            for (i, ptr, cnt, arr) in candidates
+        ]
+
+        if not candidates:
+            return
+
+        weight_candidate = None
+        bone_candidate = None
+
+        for i, ptr, cnt, arr in candidates:
+            if cnt != vertex4:
+                continue
+
+            # Likely weights: mostly in [0,1], grouped sums near 1.
+            in_range = Numeric.logical_and(arr >= -0.001, arr <= 1.001)
+            ratio_in_range = float(Numeric.add.reduce(in_range.astype('f'))) / float(len(arr))
+            grouped = Numeric.reshape(arr, (int(self.vertexCount), 4))
+            sums = Numeric.add.reduce(grouped, 1)
+            mean_sum = float(Numeric.add.reduce(sums)) / float(len(sums))
+            if ratio_in_range > 0.90 and 0.4 <= mean_sum <= 1.6:
+                weight_candidate = grouped
+                self.skinMeta['weights_pair_index'] = int(i)
+                continue
+
+            # Likely bone ids: mostly integral, non-negative, reasonably small.
+            rounded = Numeric.floor(arr + 0.5)
+            int_like = Numeric.absolute(arr - rounded) < 0.001
+            ratio_int = float(Numeric.add.reduce(int_like.astype('f'))) / float(len(arr))
+            max_val = float(arr.max()) if len(arr) else 0.0
+            min_val = float(arr.min()) if len(arr) else 0.0
+            if ratio_int > 0.95 and min_val >= -0.001 and max_val < 512.0:
+                bone_candidate = Numeric.reshape(rounded, (int(self.vertexCount), 4)).astype('i')
+                self.skinMeta['bone_ids_pair_index'] = int(i)
+
+        if weight_candidate is not None:
+            self.skinWeights = weight_candidate
+            self.skinMeta['weights_shape'] = (int(self.skinWeights.shape[0]), int(self.skinWeights.shape[1]))
+        if bone_candidate is not None:
+            self.skinBoneIds = bone_candidate
+            self.skinMeta['bone_ids_shape'] = (int(self.skinBoneIds.shape[0]), int(self.skinBoneIds.shape[1]))
+
+        if self.hasSkin():
+            logger.debug(
+                'skin node "%s": vtx=%d candidates=%d weights=%s bones=%s',
+                self.name,
+                int(self.vertexCount),
+                len(self.skinMeta.get('candidate_pairs', [])),
+                bool(self.skinWeights is not None),
+                bool(self.skinBoneIds is not None),
+            )
 
     def processMeshData(self,mdlFile):
         f = mdlFile.file
-        if self.vertexDataRawPointer != 0xFFFFFFFFL:
+        if self.vertexDataRawPointer != 0xFFFFFFFF:
             f.seek(mdlFile.rawDataOffset + self.vertexDataRawPointer + 0xC)
             b = f.read(self.vertexCount*12)
             self.vertices = Numeric.array([dataHandler.readFloatsBuf(b[i*12:(i+1)*12],3)
-                             for i in xrange(self.vertexCount)],'f')
+                             for i in range(self.vertexCount)],'f')
         else:
             self.vertices = []
-        if self.vertexNormalDataPointer != 0xFFFFFFFFL:
+        if self.vertexNormalDataPointer != 0xFFFFFFFF:
             f.seek(mdlFile.rawDataOffset + self.vertexNormalDataPointer + 0xC)
             self.normals = Numeric.array([dataHandler.readFloatsFile(f,3)
-                            for i in xrange(self.vertexCount)],'f')
+                            for i in range(self.vertexCount)],'f')
         else:
             self.normals = []
-        if self.texture0VertexDataPointer != 0xFFFFFFFFL:
+        if self.texture0VertexDataPointer != 0xFFFFFFFF:
             f.seek(mdlFile.rawDataOffset + self.texture0VertexDataPointer + 0xC)
             self.texture0Vertices = Numeric.array([dataHandler.readFloatsFile(f,2)
-                                     for i in xrange(self.vertexCount)],'f')
+                                     for i in range(self.vertexCount)],'f')
         else:
             self.texture0Vertices = []
+        if self.texture1VertexDataPointer != 0xFFFFFFFF:
+            f.seek(mdlFile.rawDataOffset + self.texture1VertexDataPointer + 0xC)
+            self.texture1Vertices = Numeric.array([dataHandler.readFloatsFile(f,2)
+                                     for i in range(self.vertexCount)],'f')
+        else:
+            self.texture1Vertices = []
         self.vertexIndexLists = []
         f.seek(self.rawVertexOffsetArray.offset)
         pointers = [dataHandler.readUIntFile(f) for i
-                    in xrange(self.rawVertexOffsetArray.size)]
+                    in range(self.rawVertexOffsetArray.size)]
         f.seek(self.vertexIndexCountArray.offset)        
         lengths = [dataHandler.readUIntFile(f) for i
-                   in xrange(self.vertexIndexCountArray.size)]
+                   in range(self.vertexIndexCountArray.size)]
         for p,l in zip(pointers,lengths):
             offset = mdlFile.rawDataOffset + p + 0xC
             f.seek(offset)
             self.vertexIndexLists.append(dataHandler.readUWordsFile(f,l))
+
+        # Skin/anim mesh variants can carry index buffers in layouts that don't
+        # match the simple raw-vertex-offset interpretation above. If the parsed
+        # indices are invalid, rebuild topology from the face array instead.
+        if (not self._indexListsValid()) or (self.hasSkin() and self.faceArray and self.faceArray.size):
+            rebuilt = self._buildIndexListsFromFaceArray(mdlFile)
+            if rebuilt:
+                self.vertexIndexLists = rebuilt
+                self.indicesFromFaces = True
+
+        if self._shouldRebuildNormals():
+            rebuilt_normals = self._buildVertexNormalsFromFaceArray(mdlFile)
+            if rebuilt_normals is not None:
+                self.normals = rebuilt_normals
         #print 'vertexIndexList for node',self.name,self.vertexIndexLists
 
+    def _resolveTextureResource(self, resourceManager, texture_name):
+        if not texture_name:
+            return (None, None)
+        base = texture_name.lower()
+        for ext in ('tga', 'dds', 'plt'):
+            resname = base + '.' + ext
+            tex = resourceManager.getResourceByName(resname)
+            if tex is not None:
+                return (tex, resname)
+        return (None, None)
+
+    def _shouldRebuildNormals(self):
+        if self.vertexCount <= 0:
+            return False
+        if self.normals is None or len(self.normals) != self.vertexCount:
+            return True
+        # Skin meshes often carry normals that don't line up with interpreted
+        # topology in this legacy loader; prefer rebuilt normals for consistency.
+        if self.hasSkin():
+            return True
+        return False
+
+    def _buildVertexNormalsFromFaceArray(self, mdlFile):
+        if not self.faceArray or self.faceArray.size <= 0:
+            return None
+        if self.vertices is None or len(self.vertices) != self.vertexCount:
+            return None
+
+        f = mdlFile.file
+        current_pos = f.tell()
+        try:
+            f.seek(self.faceArray.offset)
+            accum = Numeric.zeros((self.vertexCount, 3), 'f')
+            counts = Numeric.zeros((self.vertexCount,), 'f')
+
+            for i in range(self.faceArray.size):
+                vals = dataHandler.readFromFile('<ffffIhhhHHH', f)
+                tri = (int(vals[8]), int(vals[9]), int(vals[10]))
+                if tri[0] >= self.vertexCount or tri[1] >= self.vertexCount or tri[2] >= self.vertexCount:
+                    continue
+
+                # Prefer geometric normal from triangle vertices. If degenerate,
+                # fall back to the stored face normal from the face record.
+                v0 = self.vertices[tri[0]]
+                v1 = self.vertices[tri[1]]
+                v2 = self.vertices[tri[2]]
+                edge1 = v1 - v0
+                edge2 = v2 - v0
+                fn = Numeric.array(utilities.crossProduct(edge1, edge2), 'f')
+                mag2 = Numeric.dot(fn, fn)
+                if mag2 <= 1.0e-10:
+                    fn = Numeric.array([vals[0], vals[1], vals[2]], 'f')
+                    mag2 = Numeric.dot(fn, fn)
+                    if mag2 <= 1.0e-10:
+                        continue
+                fn = fn / math.sqrt(mag2)
+
+                for idx in tri:
+                    accum[idx] += fn
+                    counts[idx] += 1.0
+
+            for idx in range(self.vertexCount):
+                if counts[idx] > 0.0:
+                    n = accum[idx]
+                    mag2 = Numeric.dot(n, n)
+                    if mag2 > 1.0e-10:
+                        accum[idx] = n / math.sqrt(mag2)
+                    else:
+                        accum[idx] = Numeric.array([0.0, 0.0, 1.0], 'f')
+                else:
+                    accum[idx] = Numeric.array([0.0, 0.0, 1.0], 'f')
+
+            return accum
+        except Exception:
+            return None
+        finally:
+            f.seek(current_pos)
+
+    def _indexListsValid(self):
+        if not self.vertexIndexLists:
+            return False
+        if self.vertexCount <= 0:
+            return False
+        saw_index = False
+        for index_list in self.vertexIndexLists:
+            if not index_list:
+                continue
+            saw_index = True
+            for idx in index_list:
+                if idx < 0 or idx >= self.vertexCount:
+                    return False
+        return saw_index
+
+    def _buildIndexListsFromFaceArray(self, mdlFile):
+        if not self.faceArray or self.faceArray.size <= 0:
+            return None
+
+        f = mdlFile.file
+        # Preserve caller's file position.
+        current_pos = f.tell()
+        try:
+            f.seek(self.faceArray.offset)
+            faces = []
+            for i in range(self.faceArray.size):
+                # NWN binary face layout (32 bytes):
+                # 3x float normal, 1x float plane distance,
+                # 1x uint32 smoothing group,
+                # 3x int16 adjacent faces,
+                # 3x uint16 vertex indices.
+                vals = dataHandler.readFromFile('<ffffIhhhHHH', f)
+                tri = (int(vals[8]), int(vals[9]), int(vals[10]))
+                if tri[0] < self.vertexCount and tri[1] < self.vertexCount and tri[2] < self.vertexCount:
+                    faces.extend(tri)
+            if faces:
+                return [tuple(faces)]
+            return None
+        except Exception:
+            return None
+        finally:
+            f.seek(current_pos)
+
     def maxBoundingBox(self,nodelist):
-        self.boundingBox = Numeric.array([3*[float(sys.maxint)],3*[-float(sys.maxint)]])
+        self.boundingBox = Numeric.array([3*[float(sys.maxsize)],3*[-float(sys.maxsize)]])
         for n in nodelist:
             for i in range(3):
                 if n.boundingBox[0][i] < self.boundingBox[0][i]:
@@ -370,10 +633,13 @@ class Node:
                     self.boundingBox[1][i] = n.boundingBox[1][i]
                     
     def recalculateBoundingBox(self):
-        if not self.isTriMesh():
+        mesh_with_vertices = self.hasMesh() and \
+            (not self.isAABBMesh()) and \
+            self.vertices is not None and len(self.vertices) > 0
+        if not mesh_with_vertices:
             self.maxBoundingBox(self.children)
         else:
-            self.boundingBox = Numeric.array([3*[float(sys.maxint)],3*[-float(sys.maxint)]])
+            self.boundingBox = Numeric.array([3*[float(sys.maxsize)],3*[-float(sys.maxsize)]])
             for v in self.vertices:
                 for i in range(3):
                     if v[i] < self.boundingBox[0][i]:
@@ -447,7 +713,7 @@ class Node:
             sl.append("AABB")
         if self.hasMesh():
             sl.append("Mesh")
-        return string.join(sl,'-')
+        return '-'.join(sl)
 
 class Model:
     def __init__(self):
@@ -460,15 +726,24 @@ class Model:
         self.preprocessed = False
 
     def getName(self):
-        return self.getRootNode().getName()
+        root = self.getRootNode()
+        if root is None:
+            return '<unnamed model>'
+        return root.getName()
     
     def getRootNode(self):
         return self.rootNode
 
     def recalculateBoundingBoxes(self):
-        self.recalculateBoundingBoxHelper(self.getRootNode())
+        root = self.getRootNode()
+        if root is None:
+            self.validBoundingBox = False
+            return
+        self.recalculateBoundingBoxHelper(root)
         
     def recalculateBoundingBoxHelper(self,node):
+        if node is None:
+            return
         node.recalculateBoundingBox()
         for n in node.children:
             self.recalculateBoundingBoxHelper(n)
@@ -482,11 +757,11 @@ class Model:
     def __str__(self):
         strings = []
         strings.append("class: " + self.classification)
-        strings.append('bbox: ' + `self.boundingBox`)
-        strings.append('animScale: ' + `self.animScale`)
+        strings.append('bbox: ' + repr(self.boundingBox))
+        strings.append('animScale: ' + repr(self.animScale))
         if self.rootNode:
             strings.append(self.rootNode.nodeStructureAsString())
-        return string.join(strings,'\n')
+        return '\n'.join(strings)
     
     def __repr__(self):
         return self.__str__()
@@ -556,8 +831,7 @@ class MDLFile(NeverFile):
                                                 dataHandler.readFloatsFile(f,3)])
         self.model.radius = dataHandler.readFloatFile(f)
         self.model.animScale = dataHandler.readFloatFile(f)
-        self.superModelName = f.read(64)
-        self.superModelName = self.superModelName[:self.superModelName.find('\0')]
+        self.superModelName = _read_cstring(f.read(64))
         #print 'supermodel:',self.superModelName
 
     def nodeFromFile(self,pointer):
@@ -627,7 +901,7 @@ class MDLFile(NeverFile):
         elif type == 'aabb':
             n.flags |= 0x221
         else:
-            print 'Unknown node type:',type
+            print('Unknown node type:',type)
         n.cacheTrimeshType()
         
         n.name = name
@@ -639,7 +913,7 @@ class MDLFile(NeverFile):
                 if parts[1] in nodes:
                     nodes[parts[1]].children.append(n)
                 elif parts[1] != 'NULL':
-                    print 'cannot find parent node for',n.name,':',parts[1]
+                    print('cannot find parent node for',n.name,':',parts[1])
             elif parts[0] == 'ambient':
                 n.ambientColour = [float(parts[1]),float(parts[2]),
                                    float(parts[3])]
@@ -655,8 +929,7 @@ class MDLFile(NeverFile):
                 n.texture0name = parts[1]
                 if n.texture0name != 'NULL':
                     r = neverglobals.getResourceManager()
-                    n.texture0 = r.getResourceByName(n.texture0name.lower()
-                                                     + '.tga')
+                    n.texture0, n.texture0resname = n._resolveTextureResource(r, n.texture0name)
 
             elif parts[0] in Controller.types:
                 c = Controller()
@@ -686,26 +959,26 @@ class MDLFile(NeverFile):
             elif parts[0] == 'verts':
                 num = int(parts[1])
                 n.vertices = []
-                for i in xrange(num):
+                for i in range(num):
                     n.vertices.append(Numeric.array([float(val)
                                                      for val
                                                      in f.readline().split()]))
-		n.vertices = Numeric.array(n.vertices,'d')
+                n.vertices = Numeric.array(n.vertices,'d')
             elif parts[0] == 'faces':
                 num = int(parts[1])
                 n.faces = []
-                for i in xrange(num):
+                for i in range(num):
                     face = [int(val)
                          for val in f.readline().split()]
                     n.faces.append([face[:3],face[3],face[4:7],face[7]])
             elif parts[0] == 'tverts':
                 num = int(parts[1])
                 n.texture0Vertices = []
-                for i in xrange(num):
+                for i in range(num):
                     n.texture0Vertices.append([float(val)
                                                for val
                                                in f.readline().split()][:2])
-		n.texture0Vertices = Numeric.array(n.texture0Vertices,'f')
+                n.texture0Vertices = Numeric.array(n.texture0Vertices,'f')
             parts = f.readline().split()
         if n.faces:
             n.vertexIndexLists = [[]]

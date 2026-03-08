@@ -10,6 +10,7 @@ from neveredit.game.NeverData import NeverInstance
 from neveredit.util import neverglobals
 
 class Creature(LocatedNeverData):
+    _missing_model_warnings = set()
     creaturePropList = {
         'Appearance_Type':'2daIndex,appearance.2da,STRING_REF,strref,LABEL',
         'BodyBag':'2daIndex,bodybag.2da,Name,strref,Label',
@@ -76,21 +77,80 @@ class Creature(LocatedNeverData):
     def getModel(self,copy=False):
         if not copy and self.model:
             return self.model
-        twoda = neverglobals.getResourceManager()\
-                .getResourceByName('appearance.2da')
-        index = self['Appearance_Type']
-        t = twoda.getEntry(index,'MODELTYPE')
-        if t != 'P':
-            self.modelName = twoda.getEntry(index,'RACE').lower() + '.mdl'
-            model = neverglobals.getResourceManager()\
-                    .getResourceByName(self.modelName,copy)
-            if not copy:
-                self.model = model
-            return model
-        else:
-            #print 'not handling player model files yet'
-            self.modelName = ''
+        rm = neverglobals.getResourceManager()
+        twoda = rm.getResourceByName('appearance.2da')
+        try:
+            index = int(self['Appearance_Type'])
+            if index < 0 or index >= twoda.getRowCount():
+                return None
+        except (TypeError, ValueError):
             return None
+        t = str(twoda.getEntry(index,'MODELTYPE')).strip().upper()
+
+        model_name = None
+        if t == 'P':
+            # Player-style entries: prefer explicit model columns when present.
+            for col in ('MODEL_A', 'MODEL_B', 'MODEL', 'RACE'):
+                try:
+                    raw = twoda.getEntry(index, col)
+                except Exception:
+                    continue
+                if raw is None:
+                    continue
+                candidate = str(raw).strip()
+                if not candidate or candidate in ('****', 'NULL'):
+                    continue
+                model_name = candidate.lower() + '.mdl'
+                break
+        else:
+            race = twoda.getEntry(index,'RACE')
+            if race and race not in ('****', 'NULL'):
+                model_name = str(race).lower() + '.mdl'
+
+        if not model_name:
+            warning_key = ('missing-creature-model', index, t)
+            if warning_key not in Creature._missing_model_warnings:
+                Creature._missing_model_warnings.add(warning_key)
+                logger.warning('could not resolve creature model for Appearance_Type=%s (MODELTYPE=%s)', index, t)
+            return None
+
+        self.modelName = model_name
+        model = rm.getResourceByName(self.modelName,copy)
+        if model is None:
+            warning_key = ('missing-creature-resource', index, self.modelName)
+            if warning_key not in Creature._missing_model_warnings:
+                Creature._missing_model_warnings.add(warning_key)
+                logger.warning('creature model resource missing for Appearance_Type=%s: %s', index, self.modelName)
+            return None
+        if not copy:
+            self.model = model
+        return model
+
+    def getPLTTintContext(self):
+        """Return per-creature PLT tint indices when present.
+
+        These fields are available on many creature instances and drive
+        player-style PLT coloration in the game.
+        """
+        field_map = (
+            ('Color_Skin', 'skin'),
+            ('Color_Hair', 'hair'),
+            ('Color_Tattoo1', 'tattoo1'),
+            ('Color_Tattoo2', 'tattoo2'),
+        )
+        context = {}
+        for field_name, key in field_map:
+            try:
+                value = self[field_name]
+            except Exception:
+                continue
+            try:
+                value = int(value)
+            except (TypeError, ValueError):
+                continue
+            if value >= 0:
+                context[key] = value
+        return context
 
     def clone(self):
         gff = self.getGFFStruct('main').clone()
@@ -140,8 +200,8 @@ class CreatureInstance (Creature, NeverInstance):
     def __init__(self,gffEntry):
         if gffEntry.getType() != CreatureInstance.GFF_STRUCT_ID:
             logger.warning("created with gff struct type " 
-                           + `gffEntry.getType()`
-                           + " should be " + `CreatureInstance.GFF_STRUCT_ID`)
+                           + repr(gffEntry.getType())
+                           + " should be " + repr(CreatureInstance.GFF_STRUCT_ID))
         Creature.__init__(self, gffEntry)
         self.addPropList('instance',self.creatureInstPropList,gffEntry)
 

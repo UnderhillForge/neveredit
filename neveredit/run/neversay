@@ -1,4 +1,4 @@
-#!/usr/bin/env pythonw
+#!/usr/bin/env python3
 
 import sys,os,os.path
 from optparse import OptionParser
@@ -30,12 +30,12 @@ except ImportError:
     try:
         import neveredit.ui.ConversationEditor
     except ImportError:
-        print sys.exc_info()[1]
-        print sys.path
-        print >>sys.stderr,'Faulty neveredit installation: could not import main class'
+        print(sys.exc_info()[1])
+        print(sys.path)
+        print('Faulty neveredit installation: could not import main class', file=sys.stderr)
         sys.exit(1)
 
-print 'Using main class from:',neveredit.ui.ConversationEditor.__file__
+    print('Using main class from:',neveredit.ui.ConversationEditor.__file__)
 neveredit.ui.ConversationEditor.run(args)
 
 

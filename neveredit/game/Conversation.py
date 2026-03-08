@@ -9,9 +9,9 @@ class SimpleSyncStruct:
     def __str__(self):
         return string.join([
                 'Script for choice: ',
-                `self.active`,
+                repr(self.active),
                 'Reply index: ',
-                `self.index`
+                repr(self.index)
                 ])
     def __repr__(self):
         return self.__str__()
@@ -40,19 +40,19 @@ class Dialog:
     def __str__(self):
         qstr = ''
         if self.quest != '':
-            qstr = string.join(['Quest: ', self.quest, 'QuestEntry: ', `self.questEntry`])
+            qstr = string.join(['Quest: ', self.quest, 'QuestEntry: ', repr(self.questEntry)])
         return string.join([
                  'Animation: ',
-                 `self.animation`,
+                 repr(self.animation),
                  'Comment: ',
-                 `self.comment`,
+                 repr(self.comment),
                  qstr,
                  'Script: ',
-                 `self.script`,
+                 repr(self.script),
                  'Sound: ',
-                 `self.sound`,
+                 repr(self.sound),
                  'Text: ',
-                 `self.text`
+                 repr(self.text)
                  ])
     def __repr__(self):
         return self.__str__()
@@ -65,8 +65,8 @@ class NPCDialog(Dialog):
     def __str__(self):
         return string.join([
                 Dialog.__str__(self),
-                `self.repliesList`,
-                `self.Speaker`
+                repr(self.repliesList),
+                repr(self.Speaker)
                 ])
     def __repr__(self):
         return self.__str__()
@@ -79,7 +79,7 @@ class PCDialog(Dialog):
     def __str__(self):
         return string.join([
                 Dialog.__str__(self),
-                `self.repliesList`
+                repr(self.repliesList)
                 ])
 
     def __repr__(self):
@@ -183,21 +183,21 @@ class Conversation(NeverData.NeverData):
 
         self.nodes = [NPCConvNode(entry['Index'],entry,pcEntries,npcEntries,self) for entry in gffEntry['StartingList']]
         
-        for index in self.pcEntries.keys():
+        for index in list(self.pcEntries.keys()):
             for link in self.pcEntries[index].links:
                 if link.linkIndex in self.npcEntries:
                     link.pointed = self.npcEntries[link.linkIndex]
                     self.npcEntries[link.linkIndex].backlinks.append(link)
                 else:
-                    print "Warning: dangling link"
+                    print("Warning: dangling link")
             
-        for index in self.npcEntries.keys():
+        for index in list(self.npcEntries.keys()):
             for link in self.npcEntries[index].links:
                 if link.linkIndex in self.pcEntries:
                     link.pointed = self.pcEntries[link.linkIndex]
                     self.pcEntries[link.linkIndex].backlinks.append(link)
                 else:
-                    print "Warning: dangling link"
+                    print("Warning: dangling link")
         
         self.entryList = [NPCDialog(d) for d in gffEntry['EntryList']]
         self.numWords = gffEntry['NumWords']
@@ -208,13 +208,13 @@ class Conversation(NeverData.NeverData):
 
     def registerPCEntry(self,index,pcNode):
         if index in self.pcEntries:
-            print 'warning, PC entry with index',index,'already exists'
+            print('warning, PC entry with index',index,'already exists')
             return
         self.pcEntries[index] = pcNode
 
     def registerNPCEntry(self,index,npcNode):
         if index in self.npcEntries:
-            print 'warning, NPC entry with index',index,'already exists'
+            print('warning, NPC entry with index',index,'already exists')
             return
         self.npcEntries[index] = npcNode
 

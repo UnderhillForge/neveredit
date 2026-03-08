@@ -162,7 +162,7 @@ class ScriptEditor(wx.SplitterWindow):
             self.setupMenus()
             helps = [file for file in os.listdir(os.getcwd())
                      if (file[:5] == 'help_' and file[-4:] == '.zip')]
-            print os.getcwd()
+            print(os.getcwd())
             self.helpviewer = neveredit.ui.HelpViewer.makeHelpViewer(helps,os.getcwd())
 
         self.setFileChanged(False)
@@ -219,14 +219,14 @@ class ScriptEditor(wx.SplitterWindow):
         menuBar.Append(helpmenu, "&" + _("Help"))
         frame.SetMenuBar(menuBar)
             
-        wx.EVT_MENU(frame,self.ID_NEW,self.OnNew)
-        wx.EVT_MENU(frame,self.ID_OPEN,self.openFile)
-        wx.EVT_MENU(frame,self.ID_SAVE,self.saveFile)
-        wx.EVT_MENU(frame,self.ID_SAVEAS,self.saveFileAs)
-        wx.EVT_MENU(frame,self.ID_ABOUT,self.about)
-        wx.EVT_MENU(frame,self.ID_EXIT,self.exit)
-        wx.EVT_MENU(frame,self.ID_HELP,self.help)
-        wx.EVT_MENU(frame,self.ID_PREFS,self.OnPreferences)
+        frame.Bind(wx.EVT_MENU, self.OnNew, id=self.ID_NEW)
+        frame.Bind(wx.EVT_MENU, self.openFile, id=self.ID_OPEN)
+        frame.Bind(wx.EVT_MENU, self.saveFile, id=self.ID_SAVE)
+        frame.Bind(wx.EVT_MENU, self.saveFileAs, id=self.ID_SAVEAS)
+        frame.Bind(wx.EVT_MENU, self.about, id=self.ID_ABOUT)
+        frame.Bind(wx.EVT_MENU, self.exit, id=self.ID_EXIT)
+        frame.Bind(wx.EVT_MENU, self.help, id=self.ID_HELP)
+        frame.Bind(wx.EVT_MENU, self.OnPreferences, id=self.ID_PREFS)
         
         self.filemenu.Enable(self.ID_SAVEAS,False)
         self.editmenu.Enable(self.ID_COPY,False)
@@ -261,10 +261,10 @@ class ScriptEditor(wx.SplitterWindow):
             self.editmenu.Append(self.ID_PREFS,'&' + _('Preferences...'),
                                  _('prefs'))
         
-        wx.EVT_MENU(frame,self.ID_DEL,self.OnDelete)
-        wx.EVT_MENU(frame,self.ID_CUT,self.OnCut)
-        wx.EVT_MENU(frame,self.ID_COPY,self.OnCopy)
-        wx.EVT_MENU(frame,self.ID_PASTE,self.OnPaste)
+        frame.Bind(wx.EVT_MENU, self.OnDelete, id=self.ID_DEL)
+        frame.Bind(wx.EVT_MENU, self.OnCut, id=self.ID_CUT)
+        frame.Bind(wx.EVT_MENU, self.OnCopy, id=self.ID_COPY)
+        frame.Bind(wx.EVT_MENU, self.OnPaste, id=self.ID_PASTE)
         self.editmenu.Bind(wx.EVT_MENU_OPEN, self.OnEditMenu)
             
     def OnPaste(self,event):
@@ -322,7 +322,7 @@ class ScriptEditor(wx.SplitterWindow):
                             '', '',\
                             'MOD|*.mod|ERF|*.erf|HAK|*.hak|'+_('All Files')
                             +'|*.*',
-                            wx.OPEN)
+                            wx.FD_OPEN)
         if dlg.ShowModal() == wx.ID_OK:
             m = Module.Module(dlg.GetPath())
             self.setModule(m)
@@ -338,7 +338,7 @@ class ScriptEditor(wx.SplitterWindow):
         dlg = wx.FileDialog(self,_("Choose a an ERF (mod/hak/nwm) File Name for Saving"),
                            os.getcwd(), '',\
                            'MOD|*.mod|'+_('All Files') + '|*.*',
-                           wx.SAVE)
+                           wx.FD_SAVE)
         if dlg.ShowModal() == wx.ID_OK:
             self.commit()
             self.module.saveAs(dlg.GetPath())
@@ -416,7 +416,7 @@ Copyright 2003-2004'''),
         
     def OnNew(self,event):
         if not self.module:
-            raise UnitializedError,"Script Editor has no Module Assigned in OnNew"
+            raise UnitializedError("Script Editor has no Module Assigned in OnNew")
 
         dlg = NewScriptDialog(self,"New Script")
 
@@ -470,7 +470,7 @@ Copyright 2003-2004'''),
 
     def OnOutSelected(self,event):        
         line = event.GetIndex()
-        r = re.compile('\([0-9]+\)')
+        r = re.compile(r'\([0-9]+\)')
         num = r.findall(self.output.GetItemText(line))
         if num:
             editor = self.getCurrentEditor()
@@ -485,7 +485,7 @@ Copyright 2003-2004'''),
         else:
             self.scriptChoice.Enable(True)
             self.scriptChoice.Clear()
-            scriptNames = self.module.getScripts().keys()
+            scriptNames = list(self.module.getScripts().keys())
             scriptNames.sort()
             self.scriptChoice.AppendItems(scriptNames)
             self.chooseCurrentScript()
@@ -506,9 +506,9 @@ Copyright 2003-2004'''),
             self.filemenu.Enable(self.ID_SAVEAS,True)
         self.updateScriptChoice()
         self.clearOutput()
-        self.output.InsertStringItem(0,
-                                     m.getFileName() +
-                                     " loaded, select script from pulldown or add new script")
+        self.output.InsertItem(0,
+                       m.getFileName() +
+                       " loaded, select script from pulldown or add new script")
         
     def getCurrentEditor(self):
         try:
@@ -536,9 +536,9 @@ Copyright 2003-2004'''),
             compiled,err = script.compile()
         except:
             logger.exception("script compile failed")
-            self.output.InsertStringItem(0,
-                                         "compiler call failed "
-                                         "- compiler not available?")
+            self.output.InsertItem(0,
+                                   "compiler call failed "
+                                   "- compiler not available?")
             return None
         prefix = "Errors occured during compile:\n"
         if compiled:
@@ -550,7 +550,7 @@ Copyright 2003-2004'''),
         lines = prefix.split('\n')
         for i,line in enumerate(lines):
             if line:
-                self.output.InsertStringItem(i,line)
+                self.output.InsertItem(i,line)
         return compiled
 
     def setHelpViewer(self,hv):
@@ -652,7 +652,7 @@ Copyright 2003-2004'''),
         textCtl = stc.StyledTextCtrl(self.notebook,-1)
         textCtl.SetLexerLanguage('cpp')
         textCtl.SetKeyWords(0,Script.lang_keywords)
-        textCtl.SetKeyWords(1,string.join(Script.nwscript_keywords.keys()))
+        textCtl.SetKeyWords(1, ' '.join(list(Script.nwscript_keywords.keys())))
 
         textCtl.SetProperty("fold","1")
         

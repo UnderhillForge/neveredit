@@ -23,8 +23,8 @@ class PreferencesDialog(wx.Dialog):
             # not show
         self.tablist = tablist
         resourceText = PreferencesDialog_xrc.data
-        resource = wx.xrc.EmptyXmlResource()
-        resource.LoadFromString(resourceText)
+        resource = wx.xrc.XmlResource()
+        resource.LoadFromBuffer(resourceText.encode('utf-8'))
 
         dialog = resource.LoadDialog(parent,"PrefDialog")
         notebook = wx.xrc.XRCCTRL(dialog,"PrefNotebook")

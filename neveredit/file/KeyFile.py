@@ -51,18 +51,18 @@ class KeyFile(NeverFile):
             f.seek(file.pop())
             #the names seem null-terminated,
             #BW claims they're not
-            name = f.read(file.pop()).strip('\0') 
+            name = f.read(file.pop()).rstrip(b'\0').decode('latin1', 'ignore')
             file.append(name)                
 
     def keyTableFromFile(self,f):
         f.seek(self.offsetToKeyTable)
         b = f.read(self.keyCount * 22)
         self.keys = {}
-        for i in xrange(self.keyCount):
+        for i in range(self.keyCount):
             index = i*22
             resref,type,resID = self.dataHandler.readFromBuf('<16sHI',
                                                              b[index:index+22])
-            resref = resref.lower()
+            resref = resref.lower().decode('latin1', 'ignore')
             fileIndex = resID >> 20
             resourceIndex = resID & 0xFFFFF #assume variable
             #I'm not sure about the decoding of fixed resources
@@ -76,14 +76,21 @@ class KeyFile(NeverFile):
         self.keyTableFromFile(f)
         
     def getKeyList(self):
-        return self.keys.keys()
+        return list(self.keys.keys())
 
     def getBifFile(self,spec):
         f = None
         fname = spec[0][2].replace('\\','/')
         if not fname in bifFiles:
             f = BIFFile()
-            f.fromFile(os.path.join(self.appDir,fname))
+            bif_path = os.path.join(self.appDir,fname)
+            if not os.path.exists(bif_path):
+                # NWN:EE keys can store paths prefixed with "data/".
+                if fname.startswith('data/'):
+                    bif_path = os.path.join(self.appDir, fname[5:])
+                elif os.path.basename(self.appDir).lower() == 'data':
+                    bif_path = os.path.join(os.path.dirname(self.appDir), fname)
+            f.fromFile(bif_path)
             bifFiles[fname] = f
         else:
             f = bifFiles[fname]
@@ -105,10 +112,14 @@ class KeyFile(NeverFile):
     def __str__(self):
         s = ''
         for k in self.keys:
-            s += k[0].strip('\0') + '.' +\
+            if isinstance(k[0], bytes):
+                resref = k[0].rstrip(b'\0').decode('latin1', 'ignore')
+            else:
+                resref = str(k[0]).strip('\0')
+            s += resref + '.' +\
                  neveredit.game.ResourceManager\
                  .ResourceManager.extensionFromResType(k[1])\
-                 + ':' + self.keys[k][0][2] + ',' + `self.keys[k][1]` + '\n'
+                 + ':' + self.keys[k][0][2] + ',' + repr(self.keys[k][1]) + '\n'
         return s
 
     def __repr__(self):
@@ -117,11 +128,11 @@ class KeyFile(NeverFile):
 if __name__ == "__main__":
     if(len(sys.argv) == 3):
         f = KeyFile(sys.argv[2])
-        print 'reading key file',sys.argv[1]
+        print('reading key file',sys.argv[1])
         f.fromFile(sys.argv[1])
-        print 'read',len(f.getKeyList()),'keys'
-        print f
+        print('read',len(f.getKeyList()),'keys')
+        print(f)
     else:
-        print 'usage:',sys.argv[0],'<file> <appdir>'
+        print('usage:',sys.argv[0],'<file> <appdir>')
         
         

@@ -26,8 +26,8 @@ class VarControl(wx.BoxSizer):
         self.left_sizer.Add(self.type_control,\
                             flag=wx.ALL|wx.ALIGN_CENTER_VERTICAL,border=2)
 
-        wx.EVT_CHOICE(self.parent,self.type_control.GetId(),self.typeSelect)
-        wx.EVT_TEXT(self.parent,self.name_control.GetId(),self.valueChanged)
+        self.type_control.Bind(wx.EVT_CHOICE, self.typeSelect)
+        self.name_control.Bind(wx.EVT_TEXT, self.valueChanged)
 
         self.Add(self.left_sizer,wx.ALL,border=2)
 
@@ -40,22 +40,22 @@ class VarControl(wx.BoxSizer):
             self.data_control.SetRange(-2147483648,2147483647)
             # full Int range and not 0-100
             
-            if self.dataType in self.control_memory.keys():
+            if self.dataType in list(self.control_memory.keys()):
                 self.data_control.SetValue(self.control_memory[self.dataType])
             else:
                 self.data_control.SetValue(0)
             
-            wx.EVT_SPINCTRL(self.parent,self.data_control.GetId(),self.valueChanged)
-            wx.EVT_TEXT(self.parent,self.data_control.GetId(),self.valueChanged)
+            self.data_control.Bind(wx.EVT_SPINCTRL, self.valueChanged)
+            self.data_control.Bind(wx.EVT_TEXT, self.valueChanged)
         elif self.dataType in [2,3]:
             # string, use a TextCtrl
             self.data_control = wx.TextCtrl(self.parent,-1)
-            if self.dataType in self.control_memory.keys():
+            if self.dataType in list(self.control_memory.keys()):
                 self.data_control.SetValue(self.control_memory[self.dataType])
         elif self.dataType in[4,5]:
             # object and location - unsupported
             self.data_control = wx.StaticText(self.parent,-1,'Uneditable Data')
-            if self.dataType in self.control_memory.keys():
+            if self.dataType in list(self.control_memory.keys()):
                 self.data_control.SetValue(self.control_memory[self.dataType])
         if self.data_control:
             self.Add(self.data_control,flag=wx.ALL,border=2)
@@ -116,7 +116,7 @@ class VarControl(wx.BoxSizer):
                 ret_value = 0.0 # a bit harsh...
         else:
             # we should return those unknown values as they were given...
-            if self.dataType in self.control_memory.keys():
+            if self.dataType in list(self.control_memory.keys()):
                 ret_value = self.control_memory[self.dataType]
             else:
                 # I don't really know what I should do there
@@ -135,7 +135,7 @@ class VarListControl(wx.BoxSizer):
         self.commands_sizer.Add(self.addBtn,flag=wx.ALL)
 
         self.Add(self.commands_sizer)
-        wx.EVT_BUTTON(parent,self.addBtn.GetId(),self.addBtnPressed)
+        self.addBtn.Bind(wx.EVT_BUTTON, self.addBtnPressed)
 
         self.varControls_sizer = wx.BoxSizer(wx.VERTICAL)
         self.Add(self.varControls_sizer)

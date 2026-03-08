@@ -1,7 +1,7 @@
 import logging
 logger = logging.getLogger('neveredit.game')
 
-from ConfigParser import NoSectionError
+from configparser import NoSectionError
 
 from neveredit.file.GFFFile import GFFStruct
 from neveredit.game.NeverData import LocatedNeverData
@@ -56,8 +56,8 @@ class Tile(LocatedNeverData):
         self.doors = []
         for i in range(int(self['Doors'])):
             try:
-                doorsection = 'TILE' + `self['Tile_ID']` +\
-                              'DOOR' + `i`
+                doorsection = 'TILE' + repr(self['Tile_ID']) +\
+                              'DOOR' + repr(i)
                 self.doors.append(dict(tileset.items(doorsection)))
             except NoSectionError:
                 logger.info('no door section found: ' + doorsection)
@@ -70,7 +70,7 @@ class Tile(LocatedNeverData):
         return self['Tile_ID']
     
     def getName(self):
-        return `self.getId()` + '/' + self.modelName
+        return repr(self.getId()) + '/' + self.modelName
 
     def getPortrait(self):
         return self.get2DTile()
@@ -200,9 +200,9 @@ class Tile(LocatedNeverData):
         elif o == 3:
             return 270.0
         else:
-            logger.warn('warning, unknown tile orientation: ' + `o`)
+            logger.warn('warning, unknown tile orientation: ' + repr(o))
             return 0.0
 
     def getTileHeight(self):
-	return self['Tile_Height']
-	
+        return self['Tile_Height']
+    

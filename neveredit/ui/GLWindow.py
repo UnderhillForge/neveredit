@@ -6,13 +6,26 @@ from wx import glcanvas
 from OpenGL.GL import *
 from OpenGL.GLUT import *
 from OpenGL.GLU import *
+from OpenGL import error as gl_error
 import math,sys
-glutInit(sys.argv)      # must be initialized once and only once
 
-from sets import Set
+# Some systems ship PyOpenGL but not a working GLUT runtime.
+# Keep startup alive and defer failures to GLUT-dependent paths.
+if 'glutInit' in globals() and bool(glutInit):
+    try:
+        glutInit(sys.argv)  # must be initialized once and only once
+    except Exception:
+        pass
+
+def _has_glut_text_support():
+    return ('glutBitmapCharacter' in globals() and bool(glutBitmapCharacter) and
+            'glutBitmapWidth' in globals() and bool(glutBitmapWidth))
+
+Set = set
 
 from neveredit.util import Utils
 from neveredit.util import Preferences
+from neveredit.util import neverglobals
 
 Numeric = Utils.getNumPy()
 LinearAlgebra = Utils.getLinAlg()
@@ -21,6 +34,11 @@ import time
 class GLWindow(glcanvas.GLCanvas):
     def __init__(self,parent):
         glcanvas.GLCanvas.__init__(self, parent, -1)
+        self._gl_context = None
+        try:
+            self._gl_context = glcanvas.GLContext(self)
+        except Exception:
+            self._gl_context = None
         self.init = False
         self.width = 0
         self.height = 0
@@ -51,35 +69,64 @@ class GLWindow(glcanvas.GLCanvas):
         self.redrawRequested = False
         self.preprocessed = False
         self.preprocessing = False
+        self._lastPaintError = None
+        self._loggedImmediateFallback = False
+        self._skinCurrentMatrices = None
+        self._skinRestMatrices = None
+        self._skinRestInverseMatrices = None
+        self._skinDeformedVertexCache = None
+        self._skinDeformedNormalCache = None
+        self._activePLTTintContext = None
         
-        wx.EVT_ERASE_BACKGROUND(self, self.OnEraseBackground)
-        wx.EVT_SIZE(self, self.OnSize)
-        wx.EVT_PAINT(self, self.OnPaint)
-        wx.EVT_LEFT_DOWN(self, self.OnMouseDown)
-        wx.EVT_LEFT_UP(self, self.OnMouseUp)
-        wx.EVT_MOTION(self, self.OnMouseMotion)
-        wx.EVT_MOUSEWHEEL(self, self.OnMouseWheel)
-        wx.EVT_KEY_DOWN(self, self.OnKeyDown)
-	wx.EVT_KEY_UP(self,self.OnKeyUp)
+        self.Bind(wx.EVT_ERASE_BACKGROUND, self.OnEraseBackground)
+        self.Bind(wx.EVT_SIZE, self.OnSize)
+        self.Bind(wx.EVT_PAINT, self.OnPaint)
+        self.Bind(wx.EVT_LEFT_DOWN, self.OnMouseDown)
+        self.Bind(wx.EVT_LEFT_UP, self.OnMouseUp)
+        self.Bind(wx.EVT_MOTION, self.OnMouseMotion)
+        self.Bind(wx.EVT_MOUSEWHEEL, self.OnMouseWheel)
+        self.Bind(wx.EVT_KEY_DOWN, self.OnKeyDown)
+        self.Bind(wx.EVT_KEY_UP, self.OnKeyUp)
 
     def OnEraseBackground(self, event):
         pass
 
+    def makeCurrent(self):
+        '''Activate GL context on wx versions that require an explicit context.'''
+        if self._gl_context is not None:
+            glcanvas.GLCanvas.SetCurrent(self, self._gl_context)
+        else:
+            glcanvas.GLCanvas.SetCurrent(self)
+
     def OnSize(self, event):
         size = self.GetClientSize()
-        if self.GetContext():
-            self.SetCurrent()
+        try:
+            self.makeCurrent()
             self.ReSizeGLScene(size.width,size.height)
+        except Exception:
+            # Early resize events can happen before a GL context is fully ready.
+            pass
         event.Skip()
 
     def OnPaint(self, event):
         dc = wx.PaintDC(self)
         #dc.ResetBoundingBox()
-        self.SetCurrent()
+        try:
+            self.makeCurrent()
+        except Exception:
+            return
         if not self.init:
             self.InitGL(self.GetClientSize().width,self.GetClientSize().height)
             self.init = True
-        self.DrawGLScene()
+        try:
+            self.DrawGLScene()
+        except (gl_error.Error, TypeError) as exc:
+            # Some modern drivers expose a profile that lacks fixed-function
+            # entry points; avoid hard-failing the paint loop.
+            message = str(exc)
+            if message != self._lastPaintError:
+                logger.warning('GL paint skipped due to context/profile issue: %s', exc)
+                self._lastPaintError = message
 
     def OnMouseDown(self, evt):
         pass #self.CaptureMouse()
@@ -88,22 +135,27 @@ class GLWindow(glcanvas.GLCanvas):
         pass #self.ReleaseMouse()
 
     def OnKeyUp(self,evt):
-	pass
+        pass
 
     def OnKeyDown(self,evt):
         if self.preprocessing:
             return
+        unicode_key = evt.GetUnicodeKey()
+        if unicode_key is not None and unicode_key >= 0:
+            key_char = chr(unicode_key)
+        else:
+            key_char = ''
         if evt.GetKeyCode() == wx.WXK_UP:
             self.adjustZoom(2.0)
         if evt.GetKeyCode() == wx.WXK_DOWN:
             self.adjustZoom(-2.0)
-        if unichr(evt.GetUnicodeKey()) == Preferences.getPreferences()['GLW_UP']:
+        if key_char == Preferences.getPreferences()['GLW_UP']:
             self.adjustPos(1,0)
-        if unichr(evt.GetUnicodeKey()) == Preferences.getPreferences()['GLW_DOWN']:
+        if key_char == Preferences.getPreferences()['GLW_DOWN']:
             self.adjustPos(-1,0)
-        if unichr(evt.GetUnicodeKey()) == Preferences.getPreferences()['GLW_RIGHT']:
+        if key_char == Preferences.getPreferences()['GLW_RIGHT']:
             self.adjustPos(0,-1)
-        if unichr(evt.GetUnicodeKey()) == Preferences.getPreferences()['GLW_LEFT']:
+        if key_char == Preferences.getPreferences()['GLW_LEFT']:
             self.adjustPos(0,1)
         if evt.GetKeyCode() == wx.WXK_LEFT:
             self.adjustViewAngle(self.angleSpeed,0.0)
@@ -117,10 +169,11 @@ class GLWindow(glcanvas.GLCanvas):
     def OnMouseWheel(self,evt):
         if self.preprocessing:
             return
-        rotation = float(evt.GetWheelRotation())
-        if sys.platform == 'linux2':
-            rotation /= 20.0
-        self.adjustZoom(rotation)
+        wheel_delta = float(evt.GetWheelDelta() or 120.0)
+        notches = float(evt.GetWheelRotation()) / wheel_delta
+        # Use notch-based zoom so modern wheel delta values don't cause
+        # huge jumps (e.g., +/-120 per single notch).
+        self.adjustZoom(notches * 2.0)
 
     def OnMouseMotion(self,evt):
         pass
@@ -203,6 +256,8 @@ class GLWindow(glcanvas.GLCanvas):
         return buf
 
     def output_text(self,x, y, text):
+        if not _has_glut_text_support():
+            return
         glMatrixMode(GL_PROJECTION)
         glPushMatrix()
         glLoadIdentity()
@@ -221,6 +276,23 @@ class GLWindow(glcanvas.GLCanvas):
     def clearCache(self):
         self.preprocessedNodes = Set()
         self.textureStore = {}
+
+    def isRenderableMeshNode(self,node):
+        if node is None:
+            return False
+        if not hasattr(node, 'hasMesh') or not node.hasMesh():
+            return False
+        if hasattr(node, 'renderFlag') and not bool(node.renderFlag):
+            return False
+        # AABB nodes are helper/collision geometry and should not be drawn.
+        if hasattr(node, 'isAABBMesh') and node.isAABBMesh():
+            return False
+        if getattr(node, 'vertices', None) is None or len(node.vertices) == 0:
+            return False
+        vil = getattr(node, 'vertexIndexLists', None)
+        if vil is None or len(vil) == 0:
+            return False
+        return True
     
     def preprocessNodes(self,model,tag,bbox=False):
         #if model.getPreprocessed():
@@ -228,9 +300,20 @@ class GLWindow(glcanvas.GLCanvas):
         #                   model.getName())
         #    import traceback
         #    traceback.print_stack()
-        self.preprocessNodesHelper(model.getRootNode(),tag,0)
+        if model is None:
+            logger.warning('skipping preprocess for empty model (%s)', tag)
+            return False
+        root = model.getRootNode()
+        if root is None:
+            logger.warning('skipping preprocess for model with no root node (%s)', tag)
+            return False
+        previous_tint_context = self._activePLTTintContext
+        self._activePLTTintContext = getattr(model, 'pltTintContext', None)
+        try:
+            self.preprocessNodesHelper(root,tag,0)
+        finally:
+            self._activePLTTintContext = previous_tint_context
         if bbox and not model.validBoundingBox:
-            root = model.getRootNode()
             model.boundingBox = self.calculateNodeTreeBoundingBox(root)
             model.boundingSphere = [[0,0,0],0]
             model.boundingSphere[0] = (model.boundingBox[1]
@@ -241,53 +324,73 @@ class GLWindow(glcanvas.GLCanvas):
             model.boundingSphere[1] = math.sqrt(r)
             model.validBoundingBox = True
         #model.setPreprocessed(True)
+        return True
         
     def preprocessNodesHelper(self,node,tag,level):
+        if node is None:
+            return
         node.controllerDisplayList = glGenLists(1)
         glNewList(node.controllerDisplayList,GL_COMPILE)
         self.processControllers(node)
         glEndList()
-        if node.isTriMesh():
+        if self.isRenderableMeshNode(node):
             node.colourDisplayList = glGenLists(1)
             glNewList(node.colourDisplayList,GL_COMPILE)
             self.processColours(node)
             glEndList()
-            if node.texture0:
-                if not node.texture0name in self.textureStore:
-                    node.glTexture0Name = glGenTextures(1)
-                    glBindTexture (GL_TEXTURE_2D, node.glTexture0Name);
-                    glTexParameteri (GL_TEXTURE_2D,
-                                     GL_TEXTURE_WRAP_S, GL_REPEAT);
-                    glTexParameteri (GL_TEXTURE_2D,
-                                     GL_TEXTURE_WRAP_T, GL_REPEAT);
-                    glTexParameteri (GL_TEXTURE_2D,
-                                     GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-                    glTexParameteri (GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
-                                     GL_LINEAR_MIPMAP_LINEAR);
-                    try:
-                        w,h,image = node.texture0.size[0],\
-                                    node.texture0.size[1],\
-                                    node.texture0.tostring("raw","RGBA",0,-1)
-                    except SystemError:
-                        try:
-                            w,h,image = node.texture0.size[0],\
-                                        node.texture0.size[1],\
-                                        node.texture0.tostring("raw","RGBX",0,-1)
-                        except SystemError:
-                            node.texture0 = node.texture0.convert('RGBA')
-                            w,h,image = node.texture0.size[0],\
-                                        node.texture0.size[1],\
-                                        node.texture0.tostring("raw","RGBA",0,-1)
-                            
-                    assert w*h*4 == len(image)
-                    gluBuild2DMipmaps(GL_TEXTURE_2D,GL_RGBA,w,h,GL_RGBA,
-                                      GL_UNSIGNED_BYTE,image)
-                    self.textureStore[node.texture0name] = node.glTexture0Name
-                else:
-                    node.glTexture0Name = self.textureStore[node.texture0name]
+            self._ensureNodeTextureGL(node,0)
+            self._ensureNodeTextureGL(node,1)
                     
         for c in node.children:
             self.preprocessNodesHelper(c,tag,level+1)
+
+    def _ensureNodeTextureGL(self,node,slot):
+        tex_attr = 'texture%d' % slot
+        name_attr = 'texture%dname' % slot
+        gl_attr = 'glTexture%dName' % slot
+        resname_attr = 'texture%dresname' % slot
+        tex = getattr(node, tex_attr, None)
+        if tex is None:
+            return
+        tex_name = getattr(node, resname_attr, None) or getattr(node, name_attr, None)
+        if not tex_name:
+            return
+
+        store_key = tex_name
+        if str(tex_name).lower().endswith('.plt') and self._activePLTTintContext:
+            tint_signature = tuple(sorted(self._activePLTTintContext.items()))
+            store_key = (tex_name, tint_signature)
+
+            rm = neverglobals.getResourceManager()
+            raw = rm.getRawResourceByName(tex_name)
+            if raw:
+                tinted = rm.decodePLT(raw, tintContext=self._activePLTTintContext)
+                if tinted is not None:
+                    tex = tinted
+                    setattr(node, tex_attr, tex)
+
+        if store_key not in self.textureStore:
+            gl_name = glGenTextures(1)
+            glBindTexture(GL_TEXTURE_2D, gl_name)
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT)
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT)
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR)
+            try:
+                w, h, image = tex.size[0], tex.size[1], tex.tobytes('raw', 'RGBA', 0, -1)
+            except SystemError:
+                try:
+                    w, h, image = tex.size[0], tex.size[1], tex.tobytes('raw', 'RGBX', 0, -1)
+                except SystemError:
+                    tex = tex.convert('RGBA')
+                    setattr(node, tex_attr, tex)
+                    w, h, image = tex.size[0], tex.size[1], tex.tobytes('raw', 'RGBA', 0, -1)
+
+            assert w * h * 4 == len(image)
+            gluBuild2DMipmaps(GL_TEXTURE_2D, GL_RGBA, w, h, GL_RGBA,
+                              GL_UNSIGNED_BYTE, image)
+            self.textureStore[store_key] = gl_name
+        setattr(node, gl_attr, self.textureStore[store_key])
 
     def mergeBoxes(self,boxResult,boxAdd):
         for i in range(3):
@@ -300,9 +403,9 @@ class GLWindow(glcanvas.GLCanvas):
         #first, position transform to this node's space
         glCallList(node.controllerDisplayList)
         #calculcate this node's world space bounding box
-        mybb = Numeric.array([3*[float(sys.maxint)],
-                               3*[-float(sys.maxint)]])
-        if node.isTriMesh() and node.vertices:
+        mybb = Numeric.array([3*[float(sys.maxsize)],
+                               3*[-float(sys.maxsize)]])
+        if self.isRenderableMeshNode(node):
             for v in node.boundingBox:
                 v = Numeric.transpose(self.transformPointModel(v))
                 for i in range(3):
@@ -314,8 +417,8 @@ class GLWindow(glcanvas.GLCanvas):
             mybb = Numeric.array([3*[0.0],3*[0.0]])
         #calculate the children's bboxes and merge them into ours
         for c in node.children:
-            childbb = Numeric.array([3*[float(sys.maxint)],
-                                      3*[float(-sys.maxint)]])
+            childbb = Numeric.array([3*[float(sys.maxsize)],
+                                      3*[float(-sys.maxsize)]])
             self.calculateNodeTreeBoundingBoxHelper(c,childbb)
             self.mergeBoxes(mybb,childbb)
         #set the calculated bbox and calculate the bounding sphere
@@ -348,15 +451,15 @@ class GLWindow(glcanvas.GLCanvas):
         return boundingBox
 
     def fixMatrixToNumPy(self,matrix):
-	    numpymatrix = Numeric.array(matrix,'d')
-	    return numpymatrix
+        numpymatrix = Numeric.array(matrix,'d')
+        return numpymatrix
 
     def processControllers(self,node):
-        if node.position != None:
+        if node.position is not None:
             p = node.position
             glTranslate(p[0],p[1],p[2])
-        if node.orientation != None:
-	    node.orientation = self.fixMatrixToNumPy(node.orientation)
+        if node.orientation is not None:
+            node.orientation = self.fixMatrixToNumPy(node.orientation)
             glMultMatrixf(node.orientation)
         if node.scale:
             s = node.scale
@@ -415,8 +518,8 @@ class GLWindow(glcanvas.GLCanvas):
         glShadeModel(GL_SMOOTH)
         
     def glColorf(self,colour):
-	    #FIXME: glColorf is not defined, changing to glColor3f
-	    glColor3f(colour[0],colour[1],colour[2])
+        #FIXME: glColorf is not defined, changing to glColor3f
+        glColor3f(colour[0],colour[1],colour[2])
 
     def renderHighlightBoxOutline(self,box,colour=(0.1,1.0,0.1,0.5),
                                   thickness=3.0):
@@ -533,9 +636,18 @@ class GLWindow(glcanvas.GLCanvas):
         if node.texture0:
             glEnable(GL_TEXTURE_2D)
             glBindTexture(GL_TEXTURE_2D,node.glTexture0Name)
-            if hasattr(node,'texture0Vertices') and node.texture0Vertices:
-                glTexCoordPointerf(node.texture0Vertices)
-                glEnableClientState(GL_TEXTURE_COORD_ARRAY)
+            if hasattr(node,'texture0Vertices') and \
+               node.texture0Vertices is not None and \
+               len(node.texture0Vertices) > 0:
+                try:
+                    glTexCoordPointerf(node.texture0Vertices)
+                    glEnableClientState(GL_TEXTURE_COORD_ARRAY)
+                except (gl_error.Error, TypeError):
+                    # Fall back to untextured geometry if texcoord arrays are
+                    # unavailable in the active GL profile.
+                    glDisableClientState(GL_TEXTURE_COORD_ARRAY)
+                    glDisable(GL_TEXTURE_2D)
+                    return False
             else:
                 glDisableClientState(GL_TEXTURE_COORD_ARRAY)
         else:
@@ -543,36 +655,327 @@ class GLWindow(glcanvas.GLCanvas):
             #print node.name,'does not have texture'
             return False
 
+    def processTexturesImmediate(self,node):
+        if node.texture0:
+            glEnable(GL_TEXTURE_2D)
+            glBindTexture(GL_TEXTURE_2D,node.glTexture0Name)
+            return True
+        glDisable(GL_TEXTURE_2D)
+        return False
+
     def sendVertices(self,node):
-        glVertexPointerf(node.vertices)
+        # Fallback rendering paths may disable client arrays; always restore
+        # vertex-array state before pointer submission.
+        glEnableClientState(GL_VERTEX_ARRAY)
+        glVertexPointerf(self.getNodeVerticesForDraw(node))
+
+    def _captureSkinMatricesHelper(self,node,matrix_map):
+        if node is None:
+            return
+        glPushMatrix()
+        try:
+            controller_list = getattr(node, 'controllerDisplayList', None)
+            if controller_list:
+                glCallList(controller_list)
+            node_id = getattr(node, 'nodeNumber', None)
+            if node_id is not None:
+                mv = Numeric.array(glGetDoublev(GL_MODELVIEW_MATRIX), 'd')
+                matrix_map[int(node_id)] = Numeric.dot(mv, self.viewMatrixInv)
+            for c in getattr(node, 'children', []):
+                self._captureSkinMatricesHelper(c, matrix_map)
+        finally:
+            glPopMatrix()
+
+    def _prepareSkinningState(self,root_node):
+        self._skinCurrentMatrices = {}
+        self._skinDeformedVertexCache = {}
+        self._skinDeformedNormalCache = {}
+        self._captureSkinMatricesHelper(root_node, self._skinCurrentMatrices)
+
+        if not hasattr(root_node, '_skinRestMatrices') and self._skinCurrentMatrices:
+            root_node._skinRestMatrices = {}
+            root_node._skinRestInverseMatrices = {}
+            for bone_id, mat in list(self._skinCurrentMatrices.items()):
+                rest = Numeric.array(mat, 'd')
+                root_node._skinRestMatrices[int(bone_id)] = rest
+                try:
+                    root_node._skinRestInverseMatrices[int(bone_id)] = LinearAlgebra.inverse(rest)
+                except Exception:
+                    pass
+
+        self._skinRestMatrices = getattr(root_node, '_skinRestMatrices', None)
+        self._skinRestInverseMatrices = getattr(root_node, '_skinRestInverseMatrices', None)
+
+    def _getSkinDeltaByBone(self):
+        if (self._skinCurrentMatrices is None or self._skinRestInverseMatrices is None):
+            return None
+        deltas = {}
+        for bone_id, current in list(self._skinCurrentMatrices.items()):
+            inv_rest = self._skinRestInverseMatrices.get(int(bone_id))
+            if inv_rest is None:
+                continue
+            deltas[int(bone_id)] = Numeric.dot(inv_rest, current)
+        return deltas
+
+    def _computeSkinnedVertices(self,node):
+        if node is None:
+            return None
+        if not hasattr(node, 'skinWeights') or not hasattr(node, 'skinBoneIds'):
+            return None
+        if node.skinWeights is None or node.skinBoneIds is None:
+            return None
+        if node.vertices is None or len(node.vertices) == 0:
+            return None
+
+        try:
+            vertex_count = int(len(node.vertices))
+            if node.skinWeights.shape[0] != vertex_count or node.skinBoneIds.shape[0] != vertex_count:
+                return None
+        except Exception:
+            return None
+
+        deltas = self._getSkinDeltaByBone()
+        if not deltas:
+            return None
+
+        out = Numeric.array(node.vertices, 'f')
+        weights = node.skinWeights
+        bone_ids = node.skinBoneIds
+        for i in range(vertex_count):
+            base = node.vertices[i]
+            p4 = Numeric.array([base[0], base[1], base[2], 1.0], 'f')
+            accum = Numeric.zeros((3,), 'f')
+            used_w = 0.0
+            for j in range(4):
+                w = float(weights[i][j])
+                if w <= 0.0:
+                    continue
+                bone_id = int(bone_ids[i][j])
+                delta = deltas.get(bone_id)
+                if delta is None:
+                    continue
+                tp = Numeric.dot(p4, delta)
+                accum += (w * Numeric.array(tp[:3], 'f'))
+                used_w += w
+            if used_w > 0.0:
+                if used_w < 1.0:
+                    accum += (1.0 - used_w) * Numeric.array(base, 'f')
+                out[i] = accum
+        return out
+
+    def _computeSkinnedNormals(self,node):
+        if node is None or node.normals is None or len(node.normals) == 0:
+            return None
+        if not hasattr(node, 'skinWeights') or not hasattr(node, 'skinBoneIds'):
+            return None
+        if node.skinWeights is None or node.skinBoneIds is None:
+            return None
+
+        try:
+            normal_count = int(len(node.normals))
+            if node.skinWeights.shape[0] != normal_count or node.skinBoneIds.shape[0] != normal_count:
+                return None
+        except Exception:
+            return None
+
+        deltas = self._getSkinDeltaByBone()
+        if not deltas:
+            return None
+
+        out = Numeric.array(node.normals, 'f')
+        weights = node.skinWeights
+        bone_ids = node.skinBoneIds
+        for i in range(normal_count):
+            base = node.normals[i]
+            n4 = Numeric.array([base[0], base[1], base[2], 0.0], 'f')
+            accum = Numeric.zeros((3,), 'f')
+            used_w = 0.0
+            for j in range(4):
+                w = float(weights[i][j])
+                if w <= 0.0:
+                    continue
+                bone_id = int(bone_ids[i][j])
+                delta = deltas.get(bone_id)
+                if delta is None:
+                    continue
+                tn = Numeric.dot(n4, delta)
+                accum += (w * Numeric.array(tn[:3], 'f'))
+                used_w += w
+            if used_w > 0.0:
+                if used_w < 1.0:
+                    accum += (1.0 - used_w) * Numeric.array(base, 'f')
+                length = math.sqrt(float(Numeric.dot(accum, accum)))
+                if length > 1.0e-8:
+                    accum /= length
+                out[i] = accum
+        return out
+
+    def getNodeVerticesForDraw(self,node):
+        if node is None:
+            return None
+        if self._skinDeformedVertexCache is None:
+            return node.vertices
+        cache_key = id(node)
+        if cache_key in self._skinDeformedVertexCache:
+            return self._skinDeformedVertexCache[cache_key]
+        deformed = None
+        if getattr(node, 'isSkinMesh', None) and node.isSkinMesh():
+            deformed = self._computeSkinnedVertices(node)
+        if deformed is None:
+            deformed = node.vertices
+        self._skinDeformedVertexCache[cache_key] = deformed
+        return deformed
+
+    def getNodeNormalsForDraw(self,node):
+        if node is None:
+            return None
+        if self._skinDeformedNormalCache is None:
+            return node.normals
+        cache_key = id(node)
+        if cache_key in self._skinDeformedNormalCache:
+            return self._skinDeformedNormalCache[cache_key]
+        deformed = None
+        if getattr(node, 'isSkinMesh', None) and node.isSkinMesh():
+            deformed = self._computeSkinnedNormals(node)
+        if deformed is None:
+            deformed = node.normals
+        self._skinDeformedNormalCache[cache_key] = deformed
+        return deformed
+
+    def getNodeDrawMode(self, node):
+        if getattr(node, 'indicesFromFaces', False):
+            return GL_TRIANGLES
+        mode = getattr(node, 'triangleMode', None)
+        # NWN binary MDL triangleMode is not a GL enum:
+        # 3 = triangles, 4 = triangle strip.
+        if mode == 3:
+            return GL_TRIANGLES
+        if mode == 4:
+            return GL_TRIANGLE_STRIP
+        # Keep tolerant handling for potential pre-normalized GL enum values.
+        if mode in (GL_TRIANGLES,):
+            return GL_TRIANGLES
+        if mode in (GL_TRIANGLE_STRIP, 5):
+            return GL_TRIANGLE_STRIP
+        if mode in (GL_TRIANGLE_FAN, 6):
+            return GL_TRIANGLE_FAN
+        return GL_TRIANGLES
 
     def doNormals(self,node):
-        if node.normals:
-            glNormalPointerf(node.normals)
+        normals = self.getNodeNormalsForDraw(node)
+        if normals is not None and len(normals) > 0:
+            glNormalPointerf(normals)
             glEnableClientState(GL_NORMAL_ARRAY)
         else:
             glDisableClientState(GL_NORMAL_ARRAY)
 
-    def drawVertices(self,l):
-        glDrawElementsus(GL_TRIANGLES,l)
+    def drawVertices(self,node,l):
+        glDrawElementsus(self.getNodeDrawMode(node),l)
         
     def drawVertexLists(self,node):
         for l in node.vertexIndexLists:
-            self.drawVertices(l)
+            self.drawVertices(node,l)
         
     def processVertices(self,node):
         self.sendVertices(node)
         self.doNormals(node)
         self.drawVertexLists(node)
+
+    def processVerticesImmediate(self,node,withTextures=False):
+        vertices = self.getNodeVerticesForDraw(node)
+        normals = self.getNodeNormalsForDraw(node)
+        hasNormals = normals is not None and len(normals) > 0
+        hasTexcoords = withTextures and hasattr(node,'texture0Vertices') and \
+            node.texture0Vertices is not None and len(node.texture0Vertices) > 0
+        draw_mode = self.getNodeDrawMode(node)
+
+        for index_list in node.vertexIndexLists:
+            glBegin(draw_mode)
+            for raw_index in index_list:
+                i = int(raw_index)
+                if hasNormals:
+                    n = normals[i]
+                    glNormal3f(float(n[0]), float(n[1]), float(n[2]))
+                if hasTexcoords:
+                    t = node.texture0Vertices[i]
+                    glTexCoord2f(float(t[0]), float(t[1]))
+                v = vertices[i]
+                glVertex3f(float(v[0]), float(v[1]), float(v[2]))
+            glEnd()
         
     def processNode(self,node,boxOnly=False):
         if boxOnly and node.boundingBox[1][0]:
             self.renderBox(node.boundingBox)
             return True
-        self.processTextures(node)
-        glCallList(node.colourDisplayList)
-        self.processVertices(node)
+        try:
+            textured = self.processTextures(node)
+            glCallList(node.colourDisplayList)
+            self.processVertices(node)
+            self.drawSecondaryTexturePass(node)
+            return True
+        except (gl_error.Error, TypeError, ValueError, IndexError):
+            # Some drivers/PyOpenGL combinations fail client-array setup despite
+            # a valid context. Fall back to immediate-mode drawing so map geometry
+            # still renders.
+            if not self._loggedImmediateFallback:
+                logger.warning('GL client-array path unavailable; using immediate-mode fallback rendering')
+                self._loggedImmediateFallback = True
+            glDisableClientState(GL_TEXTURE_COORD_ARRAY)
+            glDisableClientState(GL_NORMAL_ARRAY)
+            glDisableClientState(GL_VERTEX_ARRAY)
+            textured = self.processTexturesImmediate(node)
+            glCallList(node.colourDisplayList)
+            self.processVerticesImmediate(node,withTextures=textured)
+            self.drawSecondaryTexturePass(node,forceImmediate=True)
         return True
+
+    def drawSecondaryTexturePass(self,node,forceImmediate=False):
+        if node is None or not getattr(node, 'texture1', None):
+            return
+        gl_tex1 = getattr(node, 'glTexture1Name', None)
+        if not gl_tex1:
+            return
+        texcoords = getattr(node, 'texture1Vertices', None)
+        if texcoords is None or len(texcoords) == 0:
+            texcoords = getattr(node, 'texture0Vertices', None)
+        if texcoords is None or len(texcoords) == 0:
+            return
+
+        glEnable(GL_TEXTURE_2D)
+        glBindTexture(GL_TEXTURE_2D, gl_tex1)
+        glDisable(GL_LIGHTING)
+        glEnable(GL_BLEND)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE)
+        glDepthMask(GL_FALSE)
+        glColor4f(1.0, 1.0, 1.0, 0.45)
+        used_client_path = False
+        try:
+            if not forceImmediate:
+                glTexCoordPointerf(texcoords)
+                glEnableClientState(GL_TEXTURE_COORD_ARRAY)
+                self.sendVertices(node)
+                self.drawVertexLists(node)
+                used_client_path = True
+        except (gl_error.Error, TypeError, ValueError, IndexError):
+            pass
+        try:
+            if not used_client_path:
+                vertices = self.getNodeVerticesForDraw(node)
+                draw_mode = self.getNodeDrawMode(node)
+                for index_list in node.vertexIndexLists:
+                    glBegin(draw_mode)
+                    for raw_index in index_list:
+                        i = int(raw_index)
+                        t = texcoords[i]
+                        glTexCoord2f(float(t[0]), float(t[1]))
+                        v = vertices[i]
+                        glVertex3f(float(v[0]), float(v[1]), float(v[2]))
+                    glEnd()
+        finally:
+            glDepthMask(GL_TRUE)
+            glColor4f(1.0, 1.0, 1.0, 1.0)
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+            glEnable(GL_LIGHTING)
 
     def drawBoundingBoxes(self,node):
         if Numeric.alltrue(Numeric.equal(node.boundingBox[1],[0,0,0])):
@@ -604,52 +1007,71 @@ class GLWindow(glcanvas.GLCanvas):
                    frustumCull=False,
                    boxOnly=False,
                    selected=False):
+        if node is None:
+            return
+        previous_current = self._skinCurrentMatrices
+        previous_rest = self._skinRestMatrices
+        previous_rest_inv = self._skinRestInverseMatrices
+        previous_vertex_cache = self._skinDeformedVertexCache
+        previous_normal_cache = self._skinDeformedNormalCache
+
+        self._prepareSkinningState(node)
         if frustumCull:
             self.modelMatrix =  Numeric.dot(glGetDoublev(GL_MODELVIEW_MATRIX),
                                              self.viewMatrixInv)
         else:
             self.modelMatrix = None
-        drewSomething = self.handleNodeHelper(node,frustumCull,boxOnly,selected)
-        if not drewSomething:
-            self.renderHighlightBoxOutline(node.boundingBox)
-        self.modelMatrix = None
+        try:
+            drewSomething = self.handleNodeHelper(node,frustumCull,boxOnly,selected)
+            if (not drewSomething) and hasattr(node, 'boundingBox'):
+                self.renderHighlightBoxOutline(node.boundingBox)
+        finally:
+            self.modelMatrix = None
+            self._skinCurrentMatrices = previous_current
+            self._skinRestMatrices = previous_rest
+            self._skinRestInverseMatrices = previous_rest_inv
+            self._skinDeformedVertexCache = previous_vertex_cache
+            self._skinDeformedNormalCache = previous_normal_cache
             
     def handleNodeHelper(self,node,
                    frustumCull=False,
                    boxOnly=False,
                    selected=False):
+        if node is None:
+            return False
         glPushMatrix()
-        glCallList(node.controllerDisplayList)
-        if frustumCull and node.boundingBox[1][0]:
-            #print node.name,self.transformPointModel(node.boundingSphere[0]),
-            #node.boundingSphere[1]
-            if self.sphereInFrustum(self.transformPointModel(node.boundingSphere[0]),
-                                    node.boundingSphere[1]):
-                #print node.name,'is IN the frustum'
-                pass
-            else:
-                #print node.name,'is OUTSIDE the frustum'
-                glPopMatrix()
-                return True
-        drewSomething = False
-        if node.isTriMesh() and\
-               node.vertices:
-            drewSomething = self.processNode(node,boxOnly)
-            if selected:
-                glPushMatrix()
-                glScalef(1.2,1.2,1.2)
-                #glBlendFunc(GL_ONE,GL_ONE)
-                glColor4f(0.1,0.9,0.1,0.6)
-                glDisable(GL_LIGHTING)
-                #self.renderBox(self.model.boundingBox)
-                self.processNode(node,False)
-                glPopMatrix()
-                #glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA)
-                glEnable(GL_LIGHTING)            
-        for c in node.children:
-            drewSomething |= self.handleNodeHelper(c,frustumCull,boxOnly,selected)
-        glPopMatrix()
-        return drewSomething
+        try:
+            controller_list = getattr(node, 'controllerDisplayList', None)
+            if controller_list:
+                glCallList(controller_list)
+            drewSomething = False
+            if frustumCull and hasattr(node, 'boundingBox') and node.boundingBox[1][0]:
+                #print node.name,self.transformPointModel(node.boundingSphere[0]),
+                #node.boundingSphere[1]
+                if not self.sphereInFrustum(self.transformPointModel(node.boundingSphere[0]),
+                                            node.boundingSphere[1]):
+                    #print node.name,'is OUTSIDE the frustum'
+                    return True
+            if self.isRenderableMeshNode(node):
+                drewSomething = self.processNode(node,boxOnly)
+                if selected:
+                    glPushMatrix()
+                    try:
+                        glScalef(1.2,1.2,1.2)
+                        #glBlendFunc(GL_ONE,GL_ONE)
+                        glColor4f(0.1,0.9,0.1,0.6)
+                        glDisable(GL_LIGHTING)
+                        #self.renderBox(self.model.boundingBox)
+                        self.processNode(node,False)
+                    finally:
+                        glPopMatrix()
+                        #glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA)
+                        glEnable(GL_LIGHTING)
+            for c in getattr(node, 'children', []):
+                drewSomething |= self.handleNodeHelper(c,frustumCull,boxOnly,selected)
+            return drewSomething
+        finally:
+            glPopMatrix()
             
 
 
@@ -673,7 +1095,7 @@ class GLWindow(glcanvas.GLCanvas):
     def transformPointInverseModelView(self,p):
         p = Numeric.resize(p,(1,4))
         p[0,3] = 1.0
-        mvm = Numeric.array(glGetDoublev(GL_MODELVIEW_MATRIX),copy=False)
+        mvm = Numeric.array(glGetDoublev(GL_MODELVIEW_MATRIX))
         mvminv = LinearAlgebra.inverse(mvm)
         p = Numeric.dot(p,mvminv)
         p /= p[0,3]
@@ -682,7 +1104,7 @@ class GLWindow(glcanvas.GLCanvas):
     def transformPointModel(self,p):
         p = Numeric.resize(p,(1,4))
         p[0,3] = 1.0
-        if self.modelMatrix != None:
+        if self.modelMatrix is not None:
             p = Numeric.matrixmultiply(p,self.modelMatrix)
         else:
             p = Numeric.dot(p,glGetDoublev(GL_MODELVIEW_MATRIX))
@@ -701,8 +1123,8 @@ class GLWindow(glcanvas.GLCanvas):
         self.point[0,3] = 1.0
         #p = Numeric.resize(p,(1,4))
         #p[0,3] = 1.0
-        if self.currentModelView == None:
-            mvm = glGetDoublev(GL_MODELVIEW_MATRIX,copy=False)
+        if self.currentModelView is None:
+            mvm = glGetDoublev(GL_MODELVIEW_MATRIX)
         else:
             mvm = self.currentModelView
         r = Numeric.dot(self.point,mvm)
@@ -751,14 +1173,14 @@ class GLWindow(glcanvas.GLCanvas):
                                        self.frustum[3],
                                        self.frustum[4])
 
-        print p1
-        print p3
-        print p5
-        print p7
-        print p2
-        print p4
-        print p6
-        print p8
+        print(p1)
+        print(p3)
+        print(p5)
+        print(p7)
+        print(p2)
+        print(p4)
+        print(p6)
+        print(p8)
        
         glBegin(GL_LINE_STRIP)
         glVertexf(p1)
@@ -798,7 +1220,7 @@ class GLWindow(glcanvas.GLCanvas):
     def computeFrustum(self):
         self.frustum = []
         #clip = self.getTotalMatrix()
-        clip = Numeric.array(glGetDoublev(GL_PROJECTION_MATRIX),copy=False)
+        clip = Numeric.array(glGetDoublev(GL_PROJECTION_MATRIX))
         
         #print 'total',clip        
         self.frustum.append(clip[:,3]-clip[:,0]) # right
@@ -859,9 +1281,11 @@ class GLWindow(glcanvas.GLCanvas):
         self.width = Width
         self.height = Height
         glClearColor(0.0, 0.0, 0.0, 1.0)
-        glClearDepth(True)            # Enables Clearing Of The Depth Buffer
+        glClearDepth(1.0)             # Enables clearing of depth buffer
         glDepthFunc(GL_LESS)          # The Type Of Depth Test To Do
         glEnable(GL_DEPTH_TEST)       # Enables Depth Testing
+        glDisable(GL_DITHER)
+        glDisable(GL_CULL_FACE)
         glShadeModel(GL_SMOOTH)       # Enables Smooth Color Shading
         glEnable(GL_TEXTURE_2D)
         glEnable(GL_BLEND)
@@ -878,12 +1302,12 @@ class GLWindow(glcanvas.GLCanvas):
         glTexEnvf (GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE)
         glEnable(GL_TEXTURE_2D)
         glAlphaFunc (GL_GREATER, 0.1)
-        glEnable(GL_POLYGON_OFFSET_FILL)
-        glPolygonOffset(0.1,0)
+        glDisable(GL_POLYGON_OFFSET_FILL)
+        glHint(GL_PERSPECTIVE_CORRECTION_HINT, GL_NICEST)
         glInitNames()
 
         self.SetupProjection()
-	##self.wireOn()
+    ##self.wireOn()
 #        self.recomputeCamera()
 
     # The function called when our window is resized
@@ -901,8 +1325,13 @@ class GLWindow(glcanvas.GLCanvas):
         glLoadIdentity()
         if pick:
             gluPickMatrix(x,y,5,5,None)
+        # Keep near plane conservative to avoid clipping model interiors when
+        # zoomed close, while still preserving depth precision.
+        near_clip = max(0.25, min(self.minZoom / 8.0, 2.0))
+        scene_extent = max(float(self.getBaseWidth()), float(self.getBaseHeight()))
+        far_clip = max(self.maxZoom + 32.0, scene_extent * 1.8 + 64.0)
         gluPerspective(45.0, float(self.width)/float(self.height),
-                       self.minZoom/2.0, self.maxZoom + 32.0)
+                       near_clip, far_clip)
         glMatrixMode(GL_MODELVIEW)
         if not pick:
             self.recomputeFrustum = True
@@ -932,7 +1361,7 @@ class GLWindow(glcanvas.GLCanvas):
         
     
     def quadricErrorCallback(self,arg):
-        print gluErrorString(arg)
+        print(gluErrorString(arg))
         
     def drawRoundedRect(self,width,height):
         cornersize = 5
@@ -985,7 +1414,7 @@ class GLWindow(glcanvas.GLCanvas):
         gluLookAt(self.viewX,self.viewY,self.viewZ,
                   self.lookingAtX,self.lookingAtY,self.lookingAtZ,
                   0,0,1)
-        mvm = Numeric.array(glGetDoublev(GL_MODELVIEW_MATRIX),copy=False)
+        mvm = Numeric.array(glGetDoublev(GL_MODELVIEW_MATRIX))
         self.viewMatrixInv = LinearAlgebra.inverse(mvm)
         if self.recomputeFrustum:
             self.computeFrustum()
@@ -996,7 +1425,9 @@ class GLWindow(glcanvas.GLCanvas):
             return
         else:
             self.redrawRequested = True
-            wx.PostEvent(self,wx.PaintEvent(self.GetId()))
+            # wxPython Phoenix does not accept an int constructor arg for PaintEvent.
+            # Refresh schedules a paint event on the UI loop.
+            wx.CallAfter(self.Refresh, False)
 
     def preprocess(self):
         '''override this routine to do preprocessing on visuals
@@ -1005,7 +1436,7 @@ class GLWindow(glcanvas.GLCanvas):
     
     def DrawGLScene(self):
         self.redrawRequested = False
-        self.SetCurrent()
+        self.makeCurrent()
         if self.preprocessing:
             return
         if not self.preprocessed:
@@ -1016,7 +1447,7 @@ class GLWindow(glcanvas.GLCanvas):
             #p.runcall(self.preprocess)
             self.preprocess()
             if self.preprocessed:
-                print 'preprocessing took %.2f seconds' % (time.time()-now)
+                print('preprocessing took %.2f seconds' % (time.time()-now))
                 #p.dump_stats('prep.prof')
                 self.recomputeCamera()
             self.preprocessing = False

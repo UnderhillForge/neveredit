@@ -22,7 +22,7 @@ class BIFFile(NeverFile):
         self.variableResourceCount = self.dataHandler.readUIntFile(f)
         self.fixedResourceCount = self.dataHandler.readUIntFile(f)
         if self.fixedResourceCount != 0:
-            print 'error, fixed resources in BIF files not implemented'
+            print('error, fixed resources in BIF files not implemented')
             return
         self.variableTableOffset = self.dataHandler.readUIntFile(f)
 
@@ -69,8 +69,8 @@ class BIFFile(NeverFile):
 if __name__ == "__main__":
     if(len(sys.argv) == 2):
         f = BIFFile()
-        print 'reading bif file',sys.argv[1]
+        print('reading bif file',sys.argv[1])
         f.fromFile(sys.argv[1])
-        print 'read file'
-        print f
+        print('read file')
+        print(f)
 

@@ -11,8 +11,8 @@ try:
     from nwntools import nsscompiler
     compilerAvailable = True
 except ImportError:
-    logger.exception('could not import nsscompiler - install from nwntools package\n'
-                     '      ignore this exception if you do not want to compile scripts')
+    logger.warning('could not import nsscompiler - install from nwntools package\n'
+                   '      ignore this exception if you do not want to compile scripts')
 
 class CompiledScript:
     def __init__(self,data):
@@ -46,7 +46,7 @@ class Script(NeverData):
                 if  parens != -1:
                     comment.append(line)
                     keyword = line[:parens].split()[-1].strip()
-                    cls.nwscript_keywords[keyword] = string.join(comment,'\n')
+                    cls.nwscript_keywords[keyword] = '\n'.join(comment)
                     comment = []
                 else:
                     eq = line.find('=')
@@ -59,7 +59,10 @@ class Script(NeverData):
     def __init__(self,n,data):
         NeverData.__init__(self)
         self.name = n
-        self.scriptData = data.decode('latin1')
+        if isinstance(data, bytes):
+            self.scriptData = data.decode('latin1')
+        else:
+            self.scriptData = data
         self.nwndir = None
         self.module = None
         self.compiled = None
@@ -113,7 +116,7 @@ class Script(NeverData):
         if not compilerAvailable:
             raise RuntimeError("nwnnsscompiler not available")
         if not self.nwndir:
-            print 'cannot compile script without location of NWN dir'
+            print('cannot compile script without location of NWN dir')
         nsscompiler.init(self.nwndir)
         if self.module:
             nsscompiler.set_module(self.module)
@@ -132,11 +135,11 @@ class Script(NeverData):
 if __name__ == '__main__':
     import sys
     Script.init_nwscript_keywords()
-    print string.join(Script.nwscript_keywords.keys())
+    print(string.join(list(Script.nwscript_keywords.keys())))
     s = Script('test',open(sys.argv[1]).read())
-    print s
-    print
-    print 'trying to compile',sys.argv[1]
+    print(s)
+    print()
+    print('trying to compile',sys.argv[1])
     s.setNWNDir('/Applications/Neverwinter Nights')    
-    print `s.compile()`
+    print(repr(s.compile()))
     

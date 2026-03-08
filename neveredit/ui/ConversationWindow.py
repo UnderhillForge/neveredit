@@ -4,9 +4,8 @@ from neveredit.file.CExoLocString import CExoLocString
 from neveredit.ui import PropWindow
 from neveredit.game.Conversation import PCConvNode
 
-class ConversationNode(wx.TreeItemData):
+class ConversationNode(object):
     def __init__(self,convNode,convTree):
-        wx.TreeItemData.__init__(self)
         self.convNode=convNode
         self.treeNode=None
         self.tree = convTree
@@ -78,7 +77,7 @@ class ConversationTree(wx.TreeCtrl):
         # TODO: fetch the default langID and gender here
         node = self.AppendItem(parent,data.getText(0,0))
         data.treeNode = node
-        self.SetPyData(node,data)
+        self.SetItemData(node,data)
         # TODO: fetch the default langID and gender here
         data.setTreeText(0,0)
         return node
@@ -124,7 +123,7 @@ class ConversationWindow(wx.SplitterWindow):
 
     def maybeApplyPropControlValues(self):
         if self.selectedTreeItem:
-            data = self.tree.GetPyData(self.selectedTreeItem)
+            data = self.tree.GetItemData(self.selectedTreeItem)
             if data:
                 self.applyPropControlValues()
 
@@ -133,14 +132,14 @@ class ConversationWindow(wx.SplitterWindow):
         displayed property controls and updates the actual
         module file to reflect these values.'''
         if self.props.applyPropControlValues(self.tree\
-                                             .GetPyData(self.selectedTreeItem).convNode):
+                                             .GetItemData(self.selectedTreeItem).convNode):
             self.setFileChanged(True)
 
     def treeSelChanged(self,event):
         self.maybeApplyPropControlValues()
-        if self.tree.GetPyData(event.GetItem()):
+        if self.tree.GetItemData(event.GetItem()):
             self.selectedTreeItem = event.GetItem()
-            conversationNode = self.tree.GetPyData(self.selectedTreeItem)
+            conversationNode = self.tree.GetItemData(self.selectedTreeItem)
             self.props.makePropsForItem(conversationNode.convNode,self) 
             textControl = self.props.getControlByPropName('Text')
             if textControl:

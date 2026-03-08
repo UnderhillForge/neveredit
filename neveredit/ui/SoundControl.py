@@ -9,7 +9,7 @@ import neveredit.file.SoundSetFile as SoundSetFile
 import os.path
 import sys
 import threading
-from cStringIO import StringIO
+from io import StringIO
 
 
 
@@ -57,8 +57,8 @@ BUG : I experience some segfaults with mp3 playing...
         self.parent = propWindow
         self.Add(self.sound_list)
         self.Add(self.play_button)
-        wx.EVT_CHOICE(propWindow,self.sound_list.GetId(),self.soundChanged)
-        wx.EVT_BUTTON(propWindow,self.play_button.GetId(),self.playButtonHit)
+        self.sound_list.Bind(wx.EVT_CHOICE, self.soundChanged)
+        self.play_button.Bind(wx.EVT_BUTTON, self.playButtonHit)
         self.SoundType = None
         self.SoundObject = None
         self.hasChanged = False

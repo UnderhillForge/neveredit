@@ -14,7 +14,7 @@ class Notebook (wx.Notebook):
 
     def getSelectedTag(self):
         select = self.GetSelection()
-        for tag,info in self.pageMap.iteritems():
+        for tag,info in self.pageMap.items():
             if info[0] == select:
                 return tag
         return None
@@ -32,7 +32,7 @@ class Notebook (wx.Notebook):
             return
         else:
             pageNum = self.pageMap[tag][0]
-            for name,page in self.pageMap.iteritems():
+            for name,page in self.pageMap.items():
                 if page[0] > pageNum:
                     self.pageMap[name][0] -= 1
             #print 'removing page',pageNum,tag
@@ -46,7 +46,7 @@ class Notebook (wx.Notebook):
         self.removePageByTag(tag, True)
 
     def getPageInfo(self, pageNum):
-        for key,info in self.pageMap.iteritems():
+        for key,info in self.pageMap.items():
             if info[0] == pageNum:
                 return info
         return None
@@ -67,7 +67,7 @@ class Notebook (wx.Notebook):
             return True
 
     def setSyncAllPages(self, sync):
-        for tag, info in self.pageMap.iteritems():
+        for tag, info in self.pageMap.items():
             info[1] = sync
             
     def setCurrentPageSync(self, sync):

@@ -6,8 +6,10 @@ import math
 
 from neveredit.game.NeverData import LocatedNeverData
 from neveredit.game.NeverData import NeverInstance
+from neveredit.util import neverglobals
 
 class Item(LocatedNeverData):
+    _missing_model_warnings = set()
     itemPropList = {
         'AddCost': 'Integer,0-100000',
         'Charges': 'Integer,0-255',
@@ -31,9 +33,66 @@ class Item(LocatedNeverData):
 
     def getPortrait(self,size):
         return None #have no portraits, but could assemble icons - to be done
+
+    @staticmethod
+    def _safe_model_name(twoda, index, *columns):
+        for col in columns:
+            try:
+                raw = twoda.getEntry(index, col)
+            except Exception:
+                continue
+            if raw is None:
+                continue
+            name = str(raw).strip()
+            if not name or name in ('****', 'NULL'):
+                continue
+            if name.lower().endswith('.mdl'):
+                return name.lower()
+            return name.lower() + '.mdl'
+        return None
     
     def getModel(self,copy=False):
-        raise NotImplementedError("no item models yet")
+        if not copy and self.model:
+            return self.model
+
+        rm = neverglobals.getResourceManager()
+        try:
+            base_idx = int(self['BaseItem'])
+        except Exception:
+            return None
+
+        baseitems = rm.getResourceByName('baseitems.2da')
+        if baseitems is None:
+            warning_key = ('missing-baseitems', base_idx)
+            if warning_key not in Item._missing_model_warnings:
+                Item._missing_model_warnings.add(warning_key)
+                logger.warning('could not resolve item model; missing baseitems.2da (BaseItem=%s)', base_idx)
+            return None
+
+        model_name = self._safe_model_name(
+            baseitems,
+            base_idx,
+            'DefaultModel', 'ModelName', 'Model', 'DropModel', 'ModelResRef'
+        )
+        if not model_name:
+            warning_key = ('missing-model', base_idx)
+            if warning_key not in Item._missing_model_warnings:
+                Item._missing_model_warnings.add(warning_key)
+                logger.warning('could not resolve item model name for BaseItem=%s', base_idx)
+            return None
+
+        self.modelName = model_name
+        model = rm.getResourceByName(self.modelName, copy)
+        if model is None:
+            warning_key = ('missing-resource', base_idx, self.modelName)
+            if warning_key not in Item._missing_model_warnings:
+                Item._missing_model_warnings.add(warning_key)
+                logger.warning('item model resource missing for BaseItem=%s: %s', base_idx, self.modelName)
+            return None
+
+        if not copy:
+            self.model = model
+        return model
 
     def clone(self):
         gff = self.getGFFStruct('main').clone()
@@ -81,8 +140,8 @@ class ItemInstance(Item, NeverInstance):
     def __init__(self,gffEntry):
         if gffEntry.getType() != ItemInstance.GFF_STRUCT_ID:
             logger.warning("created with gff struct type " 
-                           + `gffEntry.getType()`
-                           + " should be " + `ItemInstance.GFF_STRUCT_ID`)
+                           + repr(gffEntry.getType())
+                           + " should be " + repr(ItemInstance.GFF_STRUCT_ID))
         Item.__init__(self,gffEntry)
         self.addPropList('instance',self.itemInstProplist,gffEntry)
         

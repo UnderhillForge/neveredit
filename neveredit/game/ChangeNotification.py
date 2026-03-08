@@ -1,6 +1,6 @@
 """Classes to deal with change notification."""
 
-from sets import Set
+Set = set
 
 class VisualChangeListener:
     def visualChanged(self,visual):

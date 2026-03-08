@@ -19,19 +19,21 @@ class ERFKey:
         self.contents = None
 
     def getPrintableName(self):
-        return self.name.strip('\0')
+        if isinstance(self.name, bytes):
+            return self.name.rstrip(b'\0').decode('latin1', 'ignore')
+        return str(self.name).strip('\0')
     
     def __str__(self):
         stringtype = neveredit.game.ResourceManager.ResourceManager\
                      .extensionFromResType(self.type)
-        s = 'name: ' + self.name + ' id: ' + `self.id` + ' type: '\
-            + stringtype + ' offset: ' + `self.offset` + ' size: '\
-            + `self.size`
+        s = 'name: ' + self.getPrintableName() + ' id: ' + repr(self.id) + ' type: '\
+            + stringtype + ' offset: ' + repr(self.offset) + ' size: '\
+            + repr(self.size)
         return s
 
     def __repr__(self):
-        return 'ERFKey(' + `self.name` + ',' + `self.id` + ',' + `self.type`\
-               + ',' + `self.offset` + ',' + `self.size` + ')'
+        return 'ERFKey(' + repr(self.name) + ',' + repr(self.id) + ',' + repr(self.type)\
+               + ',' + repr(self.offset) + ',' + repr(self.size) + ')'
 
 class ERFFile(NeverFile):
     """A class encapsulating a Bioware ERF file.
@@ -85,7 +87,7 @@ class ERFFile(NeverFile):
         self.version = 'V1.0'
         typ = typ.upper()
         if typ not in ["ERF","MOD","SAV","HAK"]:
-            raise ValueError,'invalid erf type ' + typ
+            raise ValueError('invalid erf type ' + typ)
         self.type = typ + ' '
             
     def headerFromFile(self,f):
@@ -104,7 +106,7 @@ class ERFFile(NeverFile):
     def recalculateParams(self):
         """recalculate the offsets and sizes to be written to a file"""
         self.localizedStringSize = self.calcLocalizedStringsSize()
-        self.languageCount = len(self.localizedStrings.keys())
+        self.languageCount = len(list(self.localizedStrings.keys()))
         self.entryCount = len(self.entriesByNameAndType)
         offset = ERFFile.HEADERSIZE
         offset += self.localizedStringSize
@@ -164,18 +166,18 @@ class ERFFile(NeverFile):
             k.offset = self.dataHandler.readIntFile(self.readFileHandle)
             k.size = self.dataHandler.readIntFile(self.readFileHandle)
             #print 'found entry of type',self.typeToText(k.type)
-            if k.type in self.entriesByType.keys():
+            if k.type in list(self.entriesByType.keys()):
                 self.entriesByType[k.type].append(k)
             else:
                 self.entriesByType[k.type] = [k]
-            if (k.name,k.type) in self.entriesByType.keys():
-                print 'error, ',(k.name,k.type),'already present as key'
+            if (k.name,k.type) in list(self.entriesByType.keys()):
+                print('error, ',(k.name,k.type),'already present as key')
             self.entriesByNameAndType[(k.name,k.type)] = k
 
     def writeKeys(self):
         """write the key section of an ERF file"""
         self.writeFileHandle.seek(self.offsetToKeyList)
-        entryList = [(int(x.id),x) for x in self.entriesByNameAndType.values()]
+        entryList = [(int(x.id),x) for x in list(self.entriesByNameAndType.values())]
         entryList.sort()
         for e in entryList:
             k = e[1]
@@ -189,7 +191,7 @@ class ERFFile(NeverFile):
         Note that this should only be done AFTER the resources have been written,
         because we do not know their sizes and locations beforehand."""        
         self.writeFileHandle.seek(self.offsetToResourceList)
-        entryList = [(int(x.id),x) for x in self.entriesByNameAndType.values()]
+        entryList = [(int(x.id),x) for x in list(self.entriesByNameAndType.values())]
         entryList.sort()
         for e in entryList:
             k = e[1]
@@ -234,14 +236,14 @@ class ERFFile(NeverFile):
         '''extract all entries to be files in the current working directory.
         The files will have names of the form resref.ext.'''
         self.recalculateParams()
-        for key,entry in self.entriesByNameAndType.iteritems():
+        for key,entry in self.entriesByNameAndType.items():
             fname = neveredit.game.ResourceManager\
                     .ResourceManager.nameFromKey(key)
             f = open(fname.lower(),'wb')
             f.write(self.getRawEntryContents(entry))
             f.close()
             if verbose:
-                print fname.lower()
+                print(fname.lower())
 
     def writeEntries(self):
         """write the actual file entries of this ERF file. This method
@@ -253,7 +255,7 @@ class ERFFile(NeverFile):
         (which is a good thing)."""
         offset = self.offsetToResourceList + self.calcResourceListSize()
         self.writeFileHandle.seek(offset)
-        entryList = [(int(x.id),x) for x in self.entriesByNameAndType.values()]
+        entryList = [(int(x.id),x) for x in list(self.entriesByNameAndType.values())]
         entryList.sort()
         for e in entryList:
             entry = e[1]
@@ -277,13 +279,13 @@ class ERFFile(NeverFile):
         tmp = os.tmpnam()
         self.toFile(tmp)
         self.close()
-        print 'renaming',self.writeFileHandle.name,self.readFileHandle.name
+        print('renaming',self.writeFileHandle.name,self.readFileHandle.name)
         if os.name == 'nt' and os.path.exists(self.readFileHandle.name):
             os.remove(self.readFileHandle.name)
         try:
             os.rename(self.writeFileHandle.name,self.readFileHandle.name)
         except OSError: #may be on different file systems
-            print 'failed rename (different filesystems?), trying copy instead'
+            print('failed rename (different filesystems?), trying copy instead')
             ftmp = open(tmp,'rb')
             f = open(self.readFileHandle.name,'wb')
             f.write(ftmp.read())
@@ -296,11 +298,11 @@ class ERFFile(NeverFile):
         """write this ERF to a file"""
         if len(fname) > 0:
             if self.readFileHandle and fname == self.readFileHandle.name:
-                print 'error, ERFFile cannot write to file it is reading from'
+                print('error, ERFFile cannot write to file it is reading from')
                 return
             self.writeFileHandle = open(fname,'wb')
         self.recalculateParams()
-        print self.infoStr()
+        print(self.infoStr())
         self.headerToFile()
         self.writeLocalizedStrings()
         self.writeKeys()
@@ -327,12 +329,12 @@ class ERFFile(NeverFile):
 
         #update the entry list by adding entries from the other
         #file if they don't yet exist
-        for (name,type),entry in other.entriesByNameAndType.iteritems():
-            if (name,type) not in self.entriesByNameAndType.keys():
+        for (name,type),entry in other.entriesByNameAndType.items():
+            if (name,type) not in list(self.entriesByNameAndType.keys()):
                 entry.contents = ERFFile.RawContentWrapper(other.getRawEntryContents(entry))
                 entry.id = len(self.entriesByNameAndType)
                 self.entriesByNameAndType[(name,type)] = entry
-                if type in self.entriesByType.keys():
+                if type in list(self.entriesByType.keys()):
                     self.entriesByType[type].append(entry)
                 else:
                     self.entriesByType[type] = [entry]
@@ -341,7 +343,7 @@ class ERFFile(NeverFile):
         self.saveToReadFile()
         other.close()
         #force all entry contents to be re-interpreted
-        for entry in self.entriesByNameAndType.values():
+        for entry in list(self.entriesByNameAndType.values()):
             entry.contents = None
 
     def addRawResourceByName(self,name,r):
@@ -402,10 +404,36 @@ class ERFFile(NeverFile):
         @param name: the name to look up
         @param ext: the extension to look up
         @return: the ERFKey with this name and extension, None, if not in this file"""
-        name += (16-len(name))*'\0'
+        def _normalize_resref(value):
+            if isinstance(value, bytes):
+                return value.rstrip(b'\0').decode('latin1', 'ignore').lower()
+            return str(value).strip('\0').lower()
+
+        raw_name = name
+
+        if isinstance(name, bytes):
+            base_name_text = name.rstrip(b'\0').decode('latin1', 'ignore')
+            name_bytes = name[:16].ljust(16, b'\0')
+            name_text = base_name_text[:16].ljust(16, '\0')
+        else:
+            base_name_text = str(name).strip('\0')
+            name_text = base_name_text[:16].ljust(16, '\0')
+            name_bytes = base_name_text.encode('latin1', 'ignore')[:16].ljust(16, b'\0')
+
         type = neveredit.game.ResourceManager\
                .ResourceManager.resTypeFromExtension(ext)
-        return self.entriesByNameAndType.get((name,type), None)
+        entry = self.entriesByNameAndType.get((name_text,type), None)
+        if not entry:
+            entry = self.entriesByNameAndType.get((name_bytes,type), None)
+        if entry:
+            return entry
+
+        # Fallback for modules/resources with unexpected case or padding.
+        target_name = _normalize_resref(raw_name)
+        for (entry_name, entry_type), entry in self.entriesByNameAndType.items():
+            if entry_type == type and _normalize_resref(entry_name) == target_name:
+                return entry
+        return None
 
     def getRawEntryContents(self,entry):
         """get the raw contents of a given entry as a byte string"""
@@ -415,10 +443,21 @@ class ERFFile(NeverFile):
     def getEntryContents(self,entry):
         """get the contents of an entry as interpreted by the ResourceManager.
         This will not re-read them if they've already been read."""
+        def _normalize_key_name(name):
+            if isinstance(name, bytes):
+                return name.rstrip(b'\0').decode('latin1', 'ignore')
+            return str(name)
+
+        if entry is None:
+            raise KeyError('requested ERF entry does not exist')
         if not entry.contents:
             raw = self.getRawEntryContents(entry)
-            c = neverglobals.getResourceManager()\
-                .interpretResourceContents((entry.name,entry.type),raw)
+            key = (_normalize_key_name(entry.name), entry.type)
+            rm = neverglobals.getResourceManager()
+            if rm is None:
+                # Fallback for startup paths where NWN app dir isn't configured yet.
+                rm = neveredit.game.ResourceManager.ResourceManager()
+            c = rm.interpretResourceContents(key, raw)
             entry.contents = c
         return entry.contents
 
@@ -428,7 +467,7 @@ class ERFFile(NeverFile):
         
     def getKeyList(self):
         """Get a list of all keys stored in this ERF file."""
-        return self.entriesByNameAndType.keys()
+        return list(self.entriesByNameAndType.keys())
 
     def __iter__(self):
         """iterator through keys"""
@@ -468,12 +507,12 @@ class ERFFile(NeverFile):
         return self.getRawEntryContents(self.getEntryByNameAndExtension(key[0],
                                                                      extension))
     def infoStr(self):
-        s = 'erf type/version: ' + `self.type` + '/' + self.version + '\n'
-        s += 'build year/day: ' + `self.buildYear + 1900` + '/' + `self.buildDay` + '\n'
-        s += 'header size: ' + `self.offsetToLocalizedString` + '\n'
-        s += 'erf description in ' + `self.languageCount` + ' languages, using '\
-             + `self.localizedStringSize` + ' bytes' + '\n'
-        s += 'erf has ' + `self.entryCount` + ' entries' + '\n'
+        s = 'erf type/version: ' + repr(self.type) + '/' + self.version + '\n'
+        s += 'build year/day: ' + repr(self.buildYear + 1900) + '/' + repr(self.buildDay) + '\n'
+        s += 'header size: ' + repr(self.offsetToLocalizedString) + '\n'
+        s += 'erf description in ' + repr(self.languageCount) + ' languages, using '\
+             + repr(self.localizedStringSize) + ' bytes' + '\n'
+        s += 'erf has ' + repr(self.entryCount) + ' entries' + '\n'
         return s
     
     def __str__(self):
@@ -488,11 +527,11 @@ if __name__ == "__main__":
     if(len(sys.argv) >= 2):
         f = ERFFile()
         f.fromFile(sys.argv[1])
-        print f
+        print(f)
         if len(sys.argv) >= 3:
             f.toFile(sys.argv[2])
     else:
-        print 'usage:',sys.argv[0],'<filename>'
+        print('usage:',sys.argv[0],'<filename>')
 
 
 

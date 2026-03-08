@@ -11,8 +11,9 @@ import neveredit.game.Factions
 from neveredit.util import neverglobals
 from neveredit.util.Progressor import Progressor
 
-from cStringIO import StringIO
+from io import StringIO
 from os.path import basename
+import time
 
 class Module(Progressor,NeverData):    
     """A class the encapsulates an NWN module file and gives access
@@ -53,14 +54,38 @@ class Module(Progressor,NeverData):
         "Mod_Area_list": "Hidden",
         "VarTable": "List,Vars"
         }
+
+    @staticmethod
+    def _entry_resref_name(entry):
+        name = entry.name
+        if isinstance(name, bytes):
+            return name.rstrip(b'\0').decode('latin1', 'ignore')
+        return str(name).strip('\0')
+
+    @staticmethod
+    def _format_eta(seconds):
+        seconds = max(0, int(seconds))
+        mins, secs = divmod(seconds, 60)
+        hours, mins = divmod(mins, 60)
+        if hours:
+            return "%d:%02d:%02d" % (hours, mins, secs)
+        return "%02d:%02d" % (mins, secs)
     
     def __init__(self,fname):
+        Progressor.__init__(self)
         NeverData.__init__(self)
         self.needSave = False
         logger.debug("reading erf file %s",fname)
         self.erfFile = neveredit.file.ERFFile.ERFFile()
         self.erfFile.fromFile(fname)
         ifoEntry = self.erfFile.getEntryByNameAndExtension("module","IFO")
+        if ifoEntry is None:
+            ifo_entries = self.erfFile.getEntriesWithExtension('IFO')
+            if ifo_entries:
+                logger.warning('module IFO key "module.IFO" not found, falling back to first IFO entry')
+                ifoEntry = ifo_entries[0]
+            else:
+                raise RuntimeError('No IFO entry found in module ERF file')
         self.addPropList('ifo',self.ifoPropList,
                          self.erfFile.getEntryContents(ifoEntry).getRoot())
         logger.debug("checking for old style Mod_Hak")
@@ -86,7 +111,7 @@ class Module(Progressor,NeverData):
         if prop == None:
             logger.info("no VarTable found, adding an empty one")
             self.getGFFStruct('ifo').add('VarTable',[],'List')
-            self.NeedSave = True
+            self.needSave = True
 
         self.scripts = None
         self.conversations = None
@@ -104,7 +129,7 @@ class Module(Progressor,NeverData):
     def removeProperty(self,label):
         if label in self.ifoPropList:
             (s,t) = self.gffstructDict['ifo'].getTargetStruct(label)
-            print 'removing',t
+            print('removing',t)
             s.removeEntry(t)
 
     def getHAKNames(self):
@@ -132,23 +157,45 @@ class Module(Progressor,NeverData):
         if name in self.areas:
             return self.areas[name]
         else:
-            a = Area(self.erfFile,name)
+            try:
+                a = Area(self.erfFile,name)
+            except Exception:
+                logger.warning('skipping area with missing/broken resources: %r', name)
+                return None
             self.areas[name] = a
             return a
 
     def getEntryArea(self):
-        return self.getArea(self['Mod_Entry_Area'])
+        entry_area = self.getArea(self['Mod_Entry_Area'])
+        if entry_area is not None:
+            return entry_area
+        for area in self.getAreas().values():
+            return area
+        return None
     
     def getAreas(self):
         """Get the areas in this ERF.
         @return: a dict of Area names (keys) and objects (values)."""
         names = self.getAreaNames()
         areas = {}
-        c = 1.0
-        for n in names:
-            self.setProgress((c/len(names))*100.0)
-            areas[n] = self.getArea(n)
-            c += 1
+        total = len(names)
+        if total == 0:
+            self.setProgress(0)
+            return areas
+        start = time.time()
+        for i, n in enumerate(names, 1):
+            elapsed = max(0.001, time.time() - start)
+            progress = (float(i - 1) / float(total)) * 100.0
+            rate = float(i - 1) / elapsed if i > 1 else 0.0
+            remaining = (total - (i - 1)) / rate if rate > 0 else 0.0
+            self.setStatus('Loading areas %d/%d (ETA %s)' %
+                           (i - 1, total, self._format_eta(remaining)))
+            self.setProgress(progress)
+            area = self.getArea(n)
+            if area is not None:
+                areas[n] = area
+        self.setProgress(100.0)
+        self.setStatus('Loaded %d area definitions' % len(areas))
         self.setProgress(0)
         return areas
 
@@ -174,7 +221,7 @@ class Module(Progressor,NeverData):
         tags = {}
         tags['module'] = self['Mod_Tag']
         tags['areas'] = {}
-        for a in self.getAreas().values():
+        for a in list(self.getAreas().values()):
             tags['areas'][a['Tag']] = a.getTags()
         return tags
     
@@ -185,7 +232,7 @@ class Module(Progressor,NeverData):
             entries = self.erfFile.getEntriesWithExtension('DLG')
             self.conversations = {}
             for s in entries:
-                self.conversations[s.name.strip('\0')] = self.erfFile.getEntryContents(s)
+                self.conversations[self._entry_resref_name(s)] = self.erfFile.getEntryContents(s)
         return self.conversations
 
     def getScripts(self):
@@ -195,7 +242,7 @@ class Module(Progressor,NeverData):
             entries = self.erfFile.getEntriesWithExtension('NSS')
             self.scripts = {}
             for s in entries:
-                self.scripts[s.name.strip('\0')] = self.erfFile.getEntryContents(s)
+                self.scripts[self._entry_resref_name(s)] = self.erfFile.getEntryContents(s)
         return self.scripts
 
     def getFactions(self):
@@ -215,7 +262,7 @@ class Module(Progressor,NeverData):
         
     def commit(self):
         if self.scripts:
-            for s in self.scripts.values():
+            for s in list(self.scripts.values()):
                 self.erfFile.addResourceByName(s.getName(),s)
                 if s.getCompiledScript():
                     self.erfFile.addResourceByName(s.getName()[:-4] + '.ncs',s.getCompiledScript())
@@ -295,7 +342,7 @@ class Module(Progressor,NeverData):
         self.needSave = True
         # check if Mod_Entry_Area is a present area
         try:
-            map(lambda x: x.strip('\0'),areaNames).index(self['Mod_Entry_Area'])
+            list(map(lambda x: x.strip('\0'),areaNames).index(self['Mod_Entry_Area']))
         except KeyError:
             logger.warning('''Module starting point set in non-existant area : "%s" - please
                     change Mod_Entry_Area value''' % self['Mod_Entry_Area'])

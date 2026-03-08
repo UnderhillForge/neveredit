@@ -1,5 +1,8 @@
 from neveredit.file.NeverFile import NeverFile
 import sys
+import logging
+
+logger = logging.getLogger("neveredit.file")
 
 __all__ = ['TalkTableFile']
 
@@ -14,11 +17,16 @@ class TalkTableFile(NeverFile):
         self.tlkFile = None
         self.version = ''
         self.stringSpecSize = 40
+
+    def _version_text(self):
+        if isinstance(self.version, bytes):
+            return self.version.decode('latin1', 'ignore')
+        return str(self.version)
         
     def headerFromFile(self,f):        
         f.seek(0)
         NeverFile.headerFromFile(self,f)
-        if self.version != 'V3.0':
+        if self._version_text() != 'V3.0':
             self.stringSpecSize = 36
         else:
             self.stringSpecSize = 40 #sound length got added
@@ -45,7 +53,7 @@ class TalkTableFile(NeverFile):
         sp.pitchVariance = self.dataHandler.readUIntFile(f)
         sp.stringOffset = self.dataHandler.readUIntFile(f)
         sp.stringSize = self.dataHandler.readUIntFile(f)
-        if self.version == 'V3.0':
+        if self._version_text() == 'V3.0':
             sp.soundLength = self.dataHandler.readFloatFile(f)
         else:
             sp.soundLength = 0.0
@@ -67,11 +75,11 @@ class TalkTableFile(NeverFile):
         special = (strref & 0xFF000000) >> 24
         alternate = special & 0x01
         if alternate:
-            print 'not handling alternate dialog.tlk files yet'
+            logger.debug('not handling alternate dialog.tlk files yet')
             return None
         strref &= 0x00FFFFFF
         if strref >= len(self.stringSpecs):
-            print 'invalid index into talk table:',strref
+            logger.debug('invalid index into talk table: %s', strref)
             return None
         else:
             return self.retrieveStringSpec(strref)
@@ -85,7 +93,7 @@ class TalkTableFile(NeverFile):
         
     def __str__(self):
         s = ''
-        s += 'file has' + `self.stringCount` + 'strings\n'
+        s += 'file has' + repr(self.stringCount) + 'strings\n'
         s += 'here are a few:\n'
         for i in range(min(self.stringCount,50)):
             s += self.getString(i) + '\n'
@@ -97,8 +105,8 @@ class TalkTableFile(NeverFile):
 if __name__ == "__main__":
     if(len(sys.argv) == 3):
         f = TalkTableFile()
-        print 'reading tlk file',sys.argv[1]
+        print('reading tlk file',sys.argv[1])
         f.fromFile(sys.argv[1])
-        print f.getString(int(sys.argv[2]))
+        print(f.getString(int(sys.argv[2])))
         
         

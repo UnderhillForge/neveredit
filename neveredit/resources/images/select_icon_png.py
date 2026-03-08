@@ -6,21 +6,21 @@ package = 'neveredit.resources.images'
 
 ### wxPython specific functions
 originalExtension = '.png'
-from wxPython.wx import wxImageFromStream, wxBitmapFromImage, wxEmptyIcon
-import cStringIO
+import wx
+import io
 def getData( ):
 	"""Return the data from the resource as a simple string"""
 	return data
 def getImage( ):
 	"""Return the data from the resource as a wxImage"""
-	stream = cStringIO.StringIO(data)
-	return wxImageFromStream(stream)
+	stream = io.BytesIO(data.encode('latin1'))
+	return wx.Image(stream)
 def getBitmap( ):
 	"""Return the data from the resource as a wxBitmap"""
-	return wxBitmapFromImage(getImage())
+	return wx.Bitmap(getImage())
 def getIcon( ):
 	"""Return the data from the resource as a wxIcon"""
-	icon = wxEmptyIcon()
+	icon = wx.Icon()
 	icon.CopyFromBitmap(getBitmap())
 	return icon
 data = "âPNG\015\012\032\012\000\000\000\015IHDR\000\000\000\032\000\000\000\030\010\002\000\000\000k‡zí\000\000\000\003sBIT\010\010\010€·O‡\000\000\005VIDAT8çUU\
