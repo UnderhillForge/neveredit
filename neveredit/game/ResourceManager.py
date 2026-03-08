@@ -6,7 +6,6 @@ mechanisms and various resource name/key conversion functions."""
 import os,os.path,sys
 import io
 import logging
-import colorsys
 logger = logging.getLogger("neveredit.game")
 Set = set
 
@@ -98,6 +97,15 @@ class ResourceManager(Progressor,VisualChangeNotifier,ResourceListChangeNotifier
         5: (92, 92, 124),    # minor
         6: (128, 110, 90),   # major
     }
+    PLT_LAYER_PALETTES = {
+        0: 'pal_skin01',
+        1: 'pal_hair01',
+        2: 'pal_armor01',
+        3: 'pal_leath01',
+        4: 'pal_armor02',
+        5: 'pal_cloth01',
+        6: 'pal_cloth01',
+    }
     
     appDir = ''
 
@@ -115,6 +123,7 @@ class ResourceManager(Progressor,VisualChangeNotifier,ResourceListChangeNotifier
         ResourceListChangeNotifier.__init__(self)
         self.cache = {}
         self._missingResourceWarnings = set()
+        self._pltPaletteCache = {}
         self.clear()
         self.module = None
         
@@ -134,6 +143,7 @@ class ResourceManager(Progressor,VisualChangeNotifier,ResourceListChangeNotifier
         self.module = None
         self.BMUFileNames = []
         self.ambientSoundFileNames = []
+        self._pltPaletteCache = {}
 
     def _logMissingResource(self, key):
         if key in self._missingResourceWarnings:
@@ -404,19 +414,63 @@ class ResourceManager(Progressor,VisualChangeNotifier,ResourceListChangeNotifier
         if tint_index is None:
             return base
 
-        t = max(0.0, min(1.0, float(tint_index) / 255.0))
-        r = max(0.0, min(1.0, float(base[0]) / 255.0))
-        g = max(0.0, min(1.0, float(base[1]) / 255.0))
-        b = max(0.0, min(1.0, float(base[2]) / 255.0))
-        h, s, v = colorsys.rgb_to_hsv(r, g, b)
+        palette_name = self.PLT_LAYER_PALETTES.get(layer)
+        # Creature tattoo layers map better to tattoo palette when available.
+        if layer in (5, 6):
+            if ('tattoo1' in tintContext) or ('tattoo2' in tintContext):
+                palette_name = 'pal_tattoo01'
 
-        # Keep palettes layer-faithful while still reflecting tint selection.
-        hue_shift = (t - 0.5) * 0.16
-        h = (h + hue_shift) % 1.0
-        s = max(0.05, min(1.0, s * (0.75 + 0.45 * t)))
-        v = max(0.10, min(1.0, 0.35 + 0.60 * t))
-        rr, gg, bb = colorsys.hsv_to_rgb(h, s, v)
-        return (int(rr * 255.0), int(gg * 255.0), int(bb * 255.0))
+        sampled = self._samplePLTPaletteColour(palette_name, tint_index)
+        if sampled is not None:
+            return sampled
+        return base
+
+    def _samplePLTPaletteColour(self, palette_name, tint_index):
+        if not palette_name:
+            return None
+        image = self._getPLTPaletteImage(palette_name)
+        if image is None:
+            return None
+
+        width, height = image.size
+        if width <= 0 or height <= 0:
+            return None
+
+        index = max(0, min(255, int(tint_index)))
+
+        # Canonical NWN palette textures are 256x176 and encode 256 tint
+        # entries as a 16x16 swatch grid where each swatch is 16x11 px.
+        if width >= 256 and height >= 176:
+            cell_x = index % 16
+            cell_y = index // 16
+            x = min(width - 1, cell_x * 16 + 8)
+            y = min(height - 1, cell_y * 11 + 5)
+        else:
+            # Fallback for non-standard palette dimensions.
+            x = int(round((float(index) / 255.0) * float(width - 1)))
+            y = 0
+
+        r, g, b, _ = image.getpixel((x, y))
+        return (int(r), int(g), int(b))
+
+    def _getPLTPaletteImage(self, palette_name):
+        cached = self._pltPaletteCache.get(palette_name)
+        if cached is not None:
+            return cached
+
+        for extension in ('.tga', '.dds'):
+            try:
+                image = self.getResourceByName(palette_name + extension)
+            except Exception:
+                image = None
+            if image is None:
+                continue
+            rgba = image.convert('RGBA')
+            self._pltPaletteCache[palette_name] = rgba
+            return rgba
+
+        self._pltPaletteCache[palette_name] = None
+        return None
 
     def _pltTintIndexForLayer(self, layer, tintContext):
         names = {
