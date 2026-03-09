@@ -207,6 +207,16 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
         self._ambientPreviewSSFCountCache = {}
         self.soundRadiusEditing = None
 
+        # In-memory 2D drafting overlay for top-down terrain/height/object planning.
+        self.map2DCells = {}
+        self.map2DCellSize = 2.0
+        self.map2DBrushRadius = 1
+        self.map2DTerrainBrush = 0
+        self.map2DAssetBrush = 1
+        self.map2DHeightStep = 0.25
+        self.map2DShowGrid = True
+        self.map2DShowOcclusion = True
+
         self.Bind(wx.EVT_RIGHT_DOWN, self.OnRightMouseDown)
 
         neverglobals.getResourceManager().addVisualChangeListener(self)
@@ -231,6 +241,8 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
         elif self.mode == ToolPalette.AMBIENT_SOUND_TOOL:
             self.beingPainted = self._newAmbientSoundInstance()
             self.dragOffset = (10,10)
+        elif self.mode == ToolPalette.MAP2D_DRAW_TOOL:
+            self.beingPainted = None
         else:
             self.beingPainted = None
 
@@ -264,6 +276,11 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
         self.toPreprocess = v
 
     def OnRightMouseDown(self,evt):
+        if self.mode == ToolPalette.MAP2D_DRAW_TOOL and self.area:
+            x, y = self.mouseToPointOnBasePlane(float(evt.GetX()), float(self.height - evt.GetY()))
+            self._cycle2DAssetAt(x, y)
+            self.requestRedraw()
+            return
         if self.highlight != None:
             self.selectHighlighted(evt)
             self.popup = wx.Menu()
@@ -326,6 +343,12 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
             return
         self.SetFocus()
         self.makeCurrent()
+        if self.mode == ToolPalette.MAP2D_DRAW_TOOL and self.area:
+            if evt.LeftIsDown():
+                x, y = self.mouseToPointOnBasePlane(float(evt.GetX()), float(self.height - evt.GetY()))
+                self._apply2DDrawAt(x, y, evt)
+                self.requestRedraw()
+            return
         if self.mode == ToolPalette.SELECTION_TOOL or\
            self.mode == ToolPalette.ROTATE_TOOL:
             if self.highlight != None:
@@ -370,6 +393,15 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
         self.makeCurrent()
         currentX = evt.GetX()
         currentY = self.height - evt.GetY()
+
+        if self.mode == ToolPalette.MAP2D_DRAW_TOOL and self.area:
+            if evt.Dragging() and evt.LeftIsDown():
+                x, y = self.mouseToPointOnBasePlane(float(evt.GetX()), float(self.height - evt.GetY()))
+                self._apply2DDrawAt(x, y, evt)
+                self.requestRedraw()
+            self.lastX = currentX
+            self.lastY = currentY
+            return
 
         if self.soundRadiusEditing is not None and evt.Dragging() and evt.LeftIsDown():
             x, y = self.mouseToPointOnBasePlane(float(evt.GetX()), float(self.height - evt.GetY()))
@@ -543,6 +575,15 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
         self.holdZ = 0
 
     def OnMouseWheel(self,evt):
+        if self.mode == ToolPalette.MAP2D_DRAW_TOOL:
+            delta = evt.GetWheelRotation()
+            if delta > 0:
+                self.map2DBrushRadius = min(8, self.map2DBrushRadius + 1)
+            else:
+                self.map2DBrushRadius = max(1, self.map2DBrushRadius - 1)
+            self.setStatus('2D brush radius: %d' % self.map2DBrushRadius)
+            self.requestRedraw()
+            return
         if self.mode == ToolPalette.AMBIENT_SOUND_TOOL and self.beingPainted and hasattr(self.beingPainted, 'getRadius'):
             delta = evt.GetWheelRotation()
             step = 0.5 if delta > 0 else -0.5
@@ -559,6 +600,43 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
             key_char = chr(unicode_key).lower()
         else:
             key_char = ''
+
+        if self.mode == ToolPalette.MAP2D_DRAW_TOOL:
+            if key_char == 't':
+                self.map2DTerrainBrush = (self.map2DTerrainBrush + 1) % 6
+                self.setStatus('2D terrain brush: %s' % self._get2DTerrainName(self.map2DTerrainBrush))
+                self.requestRedraw()
+                return
+            if key_char == 'u':
+                self.map2DAssetBrush = (self.map2DAssetBrush + 1) % 5
+                self.setStatus('2D asset brush: %s' % self._get2DAssetName(self.map2DAssetBrush))
+                self.requestRedraw()
+                return
+            if key_char == 'g':
+                self.map2DShowGrid = not self.map2DShowGrid
+                self.setStatus('2D grid: %s' % ('on' if self.map2DShowGrid else 'off'))
+                self.requestRedraw()
+                return
+            if key_char == 'o':
+                self.map2DShowOcclusion = not self.map2DShowOcclusion
+                self.setStatus('2D occlusion borders: %s' % ('on' if self.map2DShowOcclusion else 'off'))
+                self.requestRedraw()
+                return
+            if key_char == 'c':
+                self.map2DCells = {}
+                self.setStatus('2D overlay cleared')
+                self.requestRedraw()
+                return
+            if key_char in ['+', '=']:
+                self.map2DBrushRadius = min(8, self.map2DBrushRadius + 1)
+                self.setStatus('2D brush radius: %d' % self.map2DBrushRadius)
+                self.requestRedraw()
+                return
+            if key_char in ['-', '_']:
+                self.map2DBrushRadius = max(1, self.map2DBrushRadius - 1)
+                self.setStatus('2D brush radius: %d' % self.map2DBrushRadius)
+                self.requestRedraw()
+                return
 
         if key_char == 'a':
             mode = self.cycleAnimationMode()
@@ -1158,6 +1236,7 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
     def setArea(self,area):
         if self.area == area:
             return
+        self.map2DCells = {}
         self.beingPainted = None
         self.area = None
         self.lock.acquire()
@@ -1306,6 +1385,7 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
                     b = self.highlightBox
                     self.drawTextBox(b)
                 self._drawAmbientLegendOverlay()
+                self._draw2DLegendOverlay()
             finally:
                 glPopMatrix()
                 glMatrixMode(GL_PROJECTION)
@@ -1347,6 +1427,177 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
 
         y = self.height - 18
         glColor3f(1.0, 0.95, 0.7)
+        for line in lines:
+            self.output_text(14, y, line)
+            y -= 14
+
+    def _get2DTerrainName(self, idx):
+        names = ['grass', 'stone', 'water', 'dirt', 'sand', 'cliff']
+        if idx < 0 or idx >= len(names):
+            return 'unknown'
+        return names[idx]
+
+    def _get2DAssetName(self, idx):
+        names = ['none', 'tree', 'rock', 'building', 'decoration']
+        if idx < 0 or idx >= len(names):
+            return 'unknown'
+        return names[idx]
+
+    def _get2DCellKey(self, x, y):
+        if not self.area:
+            return (0, 0)
+        max_x = max(0, int((self.area.getWidth() * 10.0) / self.map2DCellSize) - 1)
+        max_y = max(0, int((self.area.getHeight() * 10.0) / self.map2DCellSize) - 1)
+        cx = int(math.floor(float(x) / self.map2DCellSize))
+        cy = int(math.floor(float(y) / self.map2DCellSize))
+        if cx < 0:
+            cx = 0
+        if cy < 0:
+            cy = 0
+        if cx > max_x:
+            cx = max_x
+        if cy > max_y:
+            cy = max_y
+        return (cx, cy)
+
+    def _iter2DBrushCells(self, cell_key):
+        cx, cy = cell_key
+        r = max(1, int(self.map2DBrushRadius))
+        for ox in range(-r, r + 1):
+            for oy in range(-r, r + 1):
+                if ox * ox + oy * oy > r * r:
+                    continue
+                yield (cx + ox, cy + oy)
+
+    def _ensure2DCell(self, cell_key):
+        if cell_key not in self.map2DCells:
+            self.map2DCells[cell_key] = {
+                'terrain': 0,
+                'height': 0.0,
+                'asset': 0,
+                'blocked': False,
+            }
+        return self.map2DCells[cell_key]
+
+    def _apply2DDrawAt(self, x, y, evt):
+        base = self._get2DCellKey(x, y)
+        for key in self._iter2DBrushCells(base):
+            cell = self._ensure2DCell(key)
+            if evt.ControlDown():
+                cell['height'] = min(5.0, cell['height'] + self.map2DHeightStep)
+            elif evt.AltDown():
+                cell['height'] = max(-5.0, cell['height'] - self.map2DHeightStep)
+            elif evt.ShiftDown():
+                cell['blocked'] = not cell.get('blocked', False)
+            else:
+                cell['terrain'] = self.map2DTerrainBrush
+                cell['asset'] = self.map2DAssetBrush
+
+    def _cycle2DAssetAt(self, x, y):
+        key = self._get2DCellKey(x, y)
+        cell = self._ensure2DCell(key)
+        cell['asset'] = (int(cell.get('asset', 0)) + 1) % 5
+        self.setStatus('2D asset @%d,%d: %s' % (key[0], key[1], self._get2DAssetName(cell['asset'])))
+
+    def _draw2DGridAndPaintOverlay(self):
+        if not self.area:
+            return
+        if not self.map2DCells and not self.map2DShowGrid and self.mode != ToolPalette.MAP2D_DRAW_TOOL:
+            return
+
+        terrain_colours = {
+            0: (0.22, 0.62, 0.25, 0.28),
+            1: (0.45, 0.45, 0.47, 0.28),
+            2: (0.12, 0.35, 0.75, 0.30),
+            3: (0.48, 0.32, 0.2, 0.28),
+            4: (0.72, 0.64, 0.34, 0.28),
+            5: (0.36, 0.28, 0.22, 0.30),
+        }
+
+        glDisable(GL_LIGHTING)
+        glDisable(GL_TEXTURE_2D)
+        glEnable(GL_BLEND)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+
+        s = float(self.map2DCellSize)
+
+        for (cx, cy), cell in list(self.map2DCells.items()):
+            x0 = cx * s
+            y0 = cy * s
+            x1 = x0 + s
+            y1 = y0 + s
+
+            colour = terrain_colours.get(int(cell.get('terrain', 0)), terrain_colours[0])
+            h = float(cell.get('height', 0.0))
+            tint = max(-0.25, min(0.25, h * 0.04))
+            self.glColorf((max(0.0, min(1.0, colour[0] + tint)),
+                           max(0.0, min(1.0, colour[1] + tint)),
+                           max(0.0, min(1.0, colour[2] + tint)),
+                           colour[3]))
+            glBegin(GL_QUADS)
+            glVertex3f(x0, y0, 0.06)
+            glVertex3f(x1, y0, 0.06)
+            glVertex3f(x1, y1, 0.06)
+            glVertex3f(x0, y1, 0.06)
+            glEnd()
+
+            if int(cell.get('asset', 0)) > 0:
+                cxm = x0 + 0.5 * s
+                cym = y0 + 0.5 * s
+                self.glColorf((1.0, 0.95, 0.2, 0.8))
+                glBegin(GL_LINES)
+                glVertex3f(cxm - 0.28 * s, cym, 0.08)
+                glVertex3f(cxm + 0.28 * s, cym, 0.08)
+                glVertex3f(cxm, cym - 0.28 * s, 0.08)
+                glVertex3f(cxm, cym + 0.28 * s, 0.08)
+                glEnd()
+
+            if self.map2DShowOcclusion and bool(cell.get('blocked', False)):
+                self.glColorf((1.0, 0.15, 0.15, 0.95))
+                glBegin(GL_LINE_LOOP)
+                glVertex3f(x0, y0, 0.09)
+                glVertex3f(x1, y0, 0.09)
+                glVertex3f(x1, y1, 0.09)
+                glVertex3f(x0, y1, 0.09)
+                glEnd()
+
+        if self.map2DShowGrid or self.mode == ToolPalette.MAP2D_DRAW_TOOL:
+            self.glColorf((0.82, 0.82, 0.82, 0.24))
+            max_x = self.area.getWidth() * 10.0
+            max_y = self.area.getHeight() * 10.0
+            glBegin(GL_LINES)
+            gx = 0.0
+            while gx <= max_x + 0.001:
+                glVertex3f(gx, 0.0, 0.05)
+                glVertex3f(gx, max_y, 0.05)
+                gx += s
+            gy = 0.0
+            while gy <= max_y + 0.001:
+                glVertex3f(0.0, gy, 0.05)
+                glVertex3f(max_x, gy, 0.05)
+                gy += s
+            glEnd()
+
+        glDisable(GL_BLEND)
+        glEnable(GL_LIGHTING)
+        glEnable(GL_TEXTURE_2D)
+
+    def _draw2DLegendOverlay(self):
+        show = (self.mode == ToolPalette.MAP2D_DRAW_TOOL)
+        if not show:
+            return
+        lines = [
+            '2D Draw: LMB paint | Ctrl+LMB raise | Alt+LMB lower | Shift+LMB toggle block',
+            'RMB cycle asset at cell | Wheel +/- brush radius | C clear overlay',
+            'T terrain=%s  U asset=%s  G grid=%s  O occlusion=%s  Radius=%d'
+            % (self._get2DTerrainName(self.map2DTerrainBrush),
+               self._get2DAssetName(self.map2DAssetBrush),
+               'on' if self.map2DShowGrid else 'off',
+               'on' if self.map2DShowOcclusion else 'off',
+               self.map2DBrushRadius)
+        ]
+        y = self.height - 76
+        glColor3f(0.82, 0.98, 0.85)
         for line in lines:
             self.output_text(14, y, line)
             y -= 14
@@ -1915,6 +2166,7 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
 
             name = 0
             self.drawTree()
+            self._draw2DGridAndPaintOverlay()
 
             if self.beingPainted:
                 self.drawThing(self.beingPainted,len(self.fullThingList))

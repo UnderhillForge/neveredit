@@ -117,6 +117,7 @@ SELECTION_TOOL = wx.NewId()
 ROTATE_TOOL = wx.NewId()
 PAINT_TOOL = wx.NewId()
 AMBIENT_SOUND_TOOL = wx.NewId()
+MAP2D_DRAW_TOOL = wx.NewId()
 
 class ToolFrame(wx.MiniFrame):
     def __init__(self):
@@ -167,10 +168,18 @@ class ToolFrame(wx.MiniFrame):
                  kind=wx.ITEM_RADIO,
                  shortHelp='Place Ambient Sound Region',
                  longHelp='Place and move ambient sound radius regions')
+        self.map2dId = MAP2D_DRAW_TOOL
+        self.toolbar.AddTool(self.map2dId,
+             "2D Draw",
+             paint_icon_png.getBitmap(),
+             paint_icon_sel_png.getBitmap(),
+             kind=wx.ITEM_RADIO,
+             shortHelp='2D Map Drawing',
+             longHelp='Paint terrain, height, and object marks on a 2D grid overlay')
         self.Bind(wx.EVT_TOOL,self.toolSelected)
         self.toolbar.AddSeparator()
         self.toolbar.Realize()
-        self.toolIds = [self.selectId,self.paintId,self.rotateId,self.soundId]
+        self.toolIds = [self.selectId,self.paintId,self.rotateId,self.soundId,self.map2dId]
 
         sublist = [ptype for ptype in Palette.PALETTE_TYPES
                    if ptype not in ['Sound','Encounter',
