@@ -13,6 +13,7 @@ class Sound(LocatedNeverData):
         'LocName': 'CExoLocString',
         'TemplateResRef': 'ResRef,UTS',
         'SoundSet': 'ResRef,SSF',
+        'SoundSetEvent': 'Integer,1-256',
         'SoundResRef': 'ResRef,WAV',
         'Positional': 'Boolean',
         'Continuous': 'Boolean',

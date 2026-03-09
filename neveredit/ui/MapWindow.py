@@ -203,6 +203,7 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
         self._ambientPreviewChannel = None
         self._ambientPreviewSoundObj = None
         self._ambientPreviewRawCache = {}
+        self._ambientPreviewSSFCountCache = {}
         self.soundRadiusEditing = None
 
         self.Bind(wx.EVT_RIGHT_DOWN, self.OnRightMouseDown)
@@ -238,6 +239,7 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
         gff.add('LocName', '', 'CExoLocString')
         gff.add('TemplateResRef', '', 'ResRef')
         gff.add('SoundSet', '', 'ResRef')
+        gff.add('SoundSetEvent', 1, 'INT')
         gff.add('SoundResRef', '', 'ResRef')
         gff.add('Positional', 1, 'BYTE')
         gff.add('Continuous', 1, 'BYTE')
@@ -578,6 +580,18 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
                 self.setStatus('Ambient preview: off')
                 self._stopAmbientPreview()
             self.requestRedraw()
+            return
+
+        if key_char == 'e':
+            target = None
+            if self.selected:
+                target = self.getThingHit(self.selected[0])
+            elif self.highlight is not None:
+                target = self.getThingHit(self.highlight)
+            if target is not None and hasattr(target, 'hasProperty') and target.hasProperty('SoundSet'):
+                if self._cycleSoundSetEvent(target):
+                    self._stopAmbientPreview()
+                    self.requestRedraw()
             return
 
         if evt.GetKeyCode() == 308: #ctrl
@@ -1377,6 +1391,8 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
                     self.output_text(ipx + 6, ipy + 6, 'I=%.2f' % inner_radius)
                 lpx, lpy, _ = self.project(0.0, 0.0, 0.0)
                 self.output_text(lpx + 6, lpy - 10, 'Gain=%.2f %s' % (listener_gain, '(in)' if listener_in_range else '(out)'))
+                if thing.hasProperty('SoundSet') and self._normalizeResRef(thing['SoundSet']):
+                    self.output_text(lpx + 6, lpy - 24, 'Evt=%d' % self._getSoundSetEventIndex(thing))
         finally:
             glPopMatrix()
 
@@ -1471,12 +1487,66 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
                 try:
                     ssf = SoundSetFile.SoundSetFile()
                     ssf.fromFile(io.BytesIO(raw_ssf))
-                    entry = ssf.getEntryData(1)
+                    entry_count = int(getattr(ssf, 'EntryCount', 0) or 0)
+                    requested = self._getSoundSetEventIndex(sound)
+                    if entry_count > 0:
+                        requested = max(1, min(requested, entry_count))
+                    entry = ssf.getEntryData(requested)
                     if entry and len(entry) > 0:
                         return self._normalizeResRef(entry[0])
                 except Exception:
                     logger.debug('failed to resolve ssf preview sound for %s', sound_set, exc_info=True)
         return ''
+
+    def _getSoundSetEventIndex(self, sound):
+        value = 1
+        if sound is None:
+            return value
+        try:
+            raw = sound['SoundSetEvent']
+            if raw is not None:
+                value = int(raw)
+        except Exception:
+            value = 1
+        return max(1, value)
+
+    def _getSoundSetEntryCount(self, sound_set):
+        if not sound_set:
+            return 0
+        sound_set = self._normalizeResRef(sound_set)
+        if not sound_set:
+            return 0
+        if sound_set in self._ambientPreviewSSFCountCache:
+            return self._ambientPreviewSSFCountCache[sound_set]
+        count = 0
+        rm = neverglobals.getResourceManager()
+        raw_ssf = rm.getRawResourceByName(sound_set + '.ssf')
+        if raw_ssf:
+            try:
+                ssf = SoundSetFile.SoundSetFile()
+                ssf.fromFile(io.BytesIO(raw_ssf))
+                count = int(getattr(ssf, 'EntryCount', 0) or 0)
+            except Exception:
+                count = 0
+        self._ambientPreviewSSFCountCache[sound_set] = count
+        return count
+
+    def _cycleSoundSetEvent(self, sound):
+        sound_set = self._normalizeResRef(sound['SoundSet'])
+        if not sound_set:
+            self.setStatus('SoundSet is empty; set SSF resref first')
+            return False
+        count = self._getSoundSetEntryCount(sound_set)
+        if count <= 0:
+            self.setStatus('Could not read SSF entries for %s' % sound_set)
+            return False
+        current = self._getSoundSetEventIndex(sound)
+        next_event = current + 1
+        if next_event > count:
+            next_event = 1
+        sound['SoundSetEvent'] = next_event
+        self.setStatus('SoundSetEvent: %d/%d' % (next_event, count))
+        return True
 
     def _loadPreviewRawWav(self, wav_resref):
         if not wav_resref:
