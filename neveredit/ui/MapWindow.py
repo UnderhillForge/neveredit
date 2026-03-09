@@ -203,6 +203,7 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
         self._ambientPreviewChannel = None
         self._ambientPreviewSoundObj = None
         self._ambientPreviewRawCache = {}
+        self.soundRadiusEditing = None
 
         self.Bind(wx.EVT_RIGHT_DOWN, self.OnRightMouseDown)
 
@@ -324,6 +325,12 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
         if self.mode == ToolPalette.SELECTION_TOOL or\
            self.mode == ToolPalette.ROTATE_TOOL:
             if self.highlight != None:
+                thing = self.getThingHit(self.highlight)
+                if self.mode == ToolPalette.SELECTION_TOOL and self._isNearSoundRadiusHandle(thing, evt):
+                    self.soundRadiusEditing = thing
+                    self.selected = [self.highlight]
+                    self.requestRedraw()
+                    return
                 self.selectHighlighted(evt)
                 self.requestRedraw()
             else:
@@ -349,6 +356,7 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
             self.GetEventHandler().AddPendingEvent(event)
 
     def OnMouseUp(self, evt):
+        self.soundRadiusEditing = None
         self.beingDragged = None
 
     def OnMouseMotion(self, evt):
@@ -358,6 +366,18 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
         self.makeCurrent()
         currentX = evt.GetX()
         currentY = self.height - evt.GetY()
+
+        if self.soundRadiusEditing is not None and evt.Dragging() and evt.LeftIsDown():
+            x, y = self.mouseToPointOnBasePlane(float(evt.GetX()), float(self.height - evt.GetY()))
+            sx = float(self.soundRadiusEditing.getX())
+            sy = float(self.soundRadiusEditing.getY())
+            radius = math.sqrt((x - sx) * (x - sx) + (y - sy) * (y - sy))
+            self.soundRadiusEditing.setRadius(radius)
+            self.setStatus('Sound radius: %.2f' % max(0.25, radius))
+            self.requestRedraw()
+            self.lastX = currentX
+            self.lastY = currentY
+            return
 
         # Camera controls independent of object edit tools:
         # - Right drag: orbit camera angles.
@@ -499,6 +519,21 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
             
         self.lastX = currentX
         self.lastY = currentY
+
+    def _isNearSoundRadiusHandle(self, thing, evt):
+        if thing is None or not hasattr(thing, 'getRadius'):
+            return False
+        try:
+            x, y = self.mouseToPointOnBasePlane(float(evt.GetX()),
+                                                float(self.height - evt.GetY()))
+            sx = float(thing.getX())
+            sy = float(thing.getY())
+            radius = max(0.25, float(thing.getRadius()))
+        except Exception:
+            return False
+        distance = math.sqrt((x - sx) * (x - sx) + (y - sy) * (y - sy))
+        tolerance = max(0.5, radius * 0.08)
+        return abs(distance - radius) <= tolerance
 
     def OnKeyUp(self,evt):
         self.holdZ = 0
@@ -1294,6 +1329,9 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
 
     def _drawSoundThing(self, thing, name):
         radius = max(0.25, float(thing.getRadius()))
+        inner_radius = self._getSoundInnerRadius(thing, radius)
+        listener_gain = self._estimateSoundGainAtListener(thing, radius, inner_radius)
+        listener_in_range = listener_gain > 0.0
         glPushMatrix()
         try:
             glTranslatef(thing.getX(), thing.getY(), thing.getZ())
@@ -1316,10 +1354,62 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
                 else:
                     self.glColorf((0.1, 0.75, 0.9, 0.7))
                     self._drawSoundCircle(radius, filled=False, segments=32)
+
+                if inner_radius > 0.0 and inner_radius < radius:
+                    self.glColorf((0.95, 0.45, 0.1, 0.8))
+                    self._drawSoundCircle(inner_radius, filled=False, segments=40)
+
+                if name in self.selected or self.highlight == name:
+                    self.glColorf((1.0, 0.85, 0.15, 1.0))
+                    self._drawSoundCircle(0.25, filled=False, segments=20)
+                    glPushMatrix()
+                    glTranslatef(radius, 0.0, 0.0)
+                    self._drawSoundCircle(0.25, filled=False, segments=20)
+                    glPopMatrix()
             finally:
                 self.solidColourOff()
+
+            if self.soundRadiusEditing is thing or name in self.selected or self.highlight == name:
+                px, py, _ = self.project(radius, 0.0, 0.0)
+                self.output_text(px + 6, py + 6, 'R=%.2f' % radius)
+                if inner_radius > 0.0 and inner_radius < radius:
+                    ipx, ipy, _ = self.project(inner_radius, 0.0, 0.0)
+                    self.output_text(ipx + 6, ipy + 6, 'I=%.2f' % inner_radius)
+                lpx, lpy, _ = self.project(0.0, 0.0, 0.0)
+                self.output_text(lpx + 6, lpy - 10, 'Gain=%.2f %s' % (listener_gain, '(in)' if listener_in_range else '(out)'))
         finally:
             glPopMatrix()
+
+    def _getSoundInnerRadius(self, sound, outer_radius):
+        if sound is None:
+            return 0.0
+        for key in ('MinDistance', 'InnerRadius'):
+            value = sound[key]
+            try:
+                if value is not None:
+                    radius = float(value)
+                    if radius > 0.0:
+                        return min(radius, outer_radius)
+            except (TypeError, ValueError):
+                continue
+        return min(0.5, outer_radius)
+
+    def _estimateSoundGainAtListener(self, sound, outer_radius, inner_radius):
+        if sound is None:
+            return 0.0
+        lx, ly, _ = self._getListenerPosition()
+        sx = float(sound.getX())
+        sy = float(sound.getY())
+        dx = sx - lx
+        dy = sy - ly
+        distance = math.sqrt(dx * dx + dy * dy)
+        if distance >= outer_radius:
+            return 0.0
+        if distance <= inner_radius:
+            return 1.0
+        span = max(0.001, outer_radius - inner_radius)
+        t = (distance - inner_radius) / span
+        return max(0.0, min(1.0, 1.0 - t))
 
     def _bgrToRgbFloat(self, bgrValue, defaultColour):
         try:
