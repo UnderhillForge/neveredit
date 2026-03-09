@@ -241,6 +241,7 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
         gff.add('SoundSet', '', 'ResRef')
         gff.add('SoundSetEvent', 1, 'INT')
         gff.add('SoundResRef', '', 'ResRef')
+        gff.add('AttenuationModel', 0, 'INT')
         gff.add('Positional', 1, 'BYTE')
         gff.add('Continuous', 1, 'BYTE')
         gff.add('RandomPosition', 0, 'BYTE')
@@ -592,6 +593,18 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
                 if self._cycleSoundSetEvent(target):
                     self._stopAmbientPreview()
                     self.requestRedraw()
+            return
+
+        if key_char == 'm':
+            target = None
+            if self.selected:
+                target = self.getThingHit(self.selected[0])
+            elif self.highlight is not None:
+                target = self.getThingHit(self.highlight)
+            if target is not None and hasattr(target, 'hasProperty') and target.hasProperty('AttenuationModel'):
+                model = self._cycleAttenuationModel(target)
+                self.setStatus('Attenuation model: %s' % self._attenuationModelName(model))
+                self.requestRedraw()
             return
 
         if evt.GetKeyCode() == 308: #ctrl
@@ -1413,11 +1426,40 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
                     ipx, ipy, _ = self.project(inner_radius, 0.0, 0.0)
                     self.output_text(ipx + 6, ipy + 6, 'I=%.2f' % inner_radius)
                 lpx, lpy, _ = self.project(0.0, 0.0, 0.0)
+                model_name = self._attenuationModelName(self._getAttenuationModel(thing))
                 self.output_text(lpx + 6, lpy - 10, 'Gain=%.2f %s' % (listener_gain, '(in)' if listener_in_range else '(out)'))
+                self.output_text(lpx + 6, lpy - 24, 'Attn=%s' % model_name)
                 if thing.hasProperty('SoundSet') and self._normalizeResRef(thing['SoundSet']):
-                    self.output_text(lpx + 6, lpy - 24, 'Evt=%d' % self._getSoundSetEventIndex(thing))
+                    self.output_text(lpx + 6, lpy - 38, 'Evt=%d' % self._getSoundSetEventIndex(thing))
         finally:
             glPopMatrix()
+
+    def _getAttenuationModel(self, sound):
+        if sound is None:
+            return 0
+        try:
+            raw = sound['AttenuationModel']
+            if raw is None:
+                return 0
+            value = int(raw)
+            if value < 0:
+                return 0
+            if value > 1:
+                return 1
+            return value
+        except Exception:
+            return 0
+
+    def _attenuationModelName(self, model):
+        if int(model) == 1:
+            return 'inverse'
+        return 'linear'
+
+    def _cycleAttenuationModel(self, sound):
+        current = self._getAttenuationModel(sound)
+        nxt = 0 if current == 1 else 1
+        sound['AttenuationModel'] = nxt
+        return nxt
 
     def _getSoundInnerRadius(self, sound, outer_radius):
         if sound is None:
@@ -1448,7 +1490,12 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
             return 1.0
         span = max(0.001, outer_radius - inner_radius)
         t = (distance - inner_radius) / span
-        return max(0.0, min(1.0, 1.0 - t))
+        linear = max(0.0, min(1.0, 1.0 - t))
+        model = self._getAttenuationModel(sound)
+        if model == 1:
+            # Inverse-ish falloff for tuning contrast while staying stable.
+            return max(0.0, min(1.0, linear * linear))
+        return linear
 
     def _bgrToRgbFloat(self, bgrValue, defaultColour):
         try:

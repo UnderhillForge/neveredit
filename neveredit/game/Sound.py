@@ -15,6 +15,7 @@ class Sound(LocatedNeverData):
         'SoundSet': 'ResRef,SSF',
         'SoundSetEvent': 'Integer,1-256',
         'SoundResRef': 'ResRef,WAV',
+        'AttenuationModel': 'Integer,0-1',
         'Positional': 'Boolean',
         'Continuous': 'Boolean',
         'Volume': 'Integer,0-127',
