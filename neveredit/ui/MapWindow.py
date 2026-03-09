@@ -202,6 +202,7 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
         self._ambientPreviewMixerReady = False
         self._ambientPreviewActiveVoices = {}
         self._ambientPreviewMaxVoices = 4
+        self._ambientPreviewDebugVoices = []
         self._ambientPreviewRawCache = {}
         self._ambientPreviewSSFCountCache = {}
         self.soundRadiusEditing = None
@@ -1339,6 +1340,11 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
             % (model_text, '3D' if self.ambientUse3DDistance else '2D')
         ]
 
+        if self.ambientPreviewEnabled:
+            lines.append('Active voices: %d' % len(self._ambientPreviewDebugVoices))
+            for voice_line in self._ambientPreviewDebugVoices[:3]:
+                lines.append('  ' + voice_line)
+
         y = self.height - 18
         glColor3f(1.0, 0.95, 0.7)
         for line in lines:
@@ -1684,6 +1690,7 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
                 except Exception:
                     pass
         self._ambientPreviewActiveVoices = {}
+        self._ambientPreviewDebugVoices = []
 
     def _playAmbientPreviewRaw(self, sound_key, raw_wav, gain):
         if not raw_wav:
@@ -1721,7 +1728,10 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
                     pass
             self._ambientPreviewActiveVoices.pop(sound_key, None)
 
-        for sound_key, wav_resref, gain in entries:
+        for entry in entries:
+            sound_key = entry[0]
+            wav_resref = entry[1]
+            gain = entry[2]
             clamped = max(0.0, min(1.0, float(gain)))
             if sound_key in self._ambientPreviewActiveVoices:
                 channel = None
@@ -1772,14 +1782,20 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
             if gain <= 0.01:
                 continue
             sound_key = (sound.getNevereditId(), wav_resref)
-            candidates.append((sound_key, wav_resref, gain))
+            descriptor = '#%s %s g=%.2f' % (str(sound.getNevereditId()), wav_resref, gain)
+            sound_set = self._normalizeResRef(sound['SoundSet'])
+            if sound_set:
+                descriptor += ' e=%d' % self._getSoundSetEventIndex(sound)
+            candidates.append((sound_key, wav_resref, gain, descriptor))
 
         if not candidates:
             self._stopAmbientPreview()
             return
 
         candidates.sort(key=lambda item: item[2], reverse=True)
-        self._refreshAmbientPreviewVoices(candidates[:self._ambientPreviewMaxVoices])
+        top_entries = candidates[:self._ambientPreviewMaxVoices]
+        self._ambientPreviewDebugVoices = [entry[3] for entry in top_entries]
+        self._refreshAmbientPreviewVoices(top_entries)
 
     def _isUsableBoundingBox(self, box):
         if box is None:
