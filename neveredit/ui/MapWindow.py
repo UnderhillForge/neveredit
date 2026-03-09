@@ -228,6 +228,7 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
             'showWaypoints': True,
             'showPaths': True,
         }
+        self._loadLayerVisibility()
         self.mapLayersWindow = None
 
         self.Bind(wx.EVT_RIGHT_DOWN, self.OnRightMouseDown)
@@ -239,6 +240,7 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
         
     def Destroy(self):
         self._save2DDraftForCurrentArea()
+        self._saveLayerVisibility()
         if self.mapLayersWindow is not None:
             try:
                 self.mapLayersWindow.Destroy()
@@ -258,7 +260,37 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
         for key, value in list(layerState.items()):
             if key in self.layerVisibility:
                 self.layerVisibility[key] = bool(value)
+        self._saveLayerVisibility()
         self.requestRedraw()
+
+    def _getLayerVisibilityPath(self):
+        repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+        return os.path.join(repo_root, '.neveredit_map_layers.json')
+
+    def _loadLayerVisibility(self):
+        path = self._getLayerVisibilityPath()
+        if not os.path.exists(path):
+            return
+        try:
+            with open(path, 'r') as f:
+                payload = json.load(f)
+            if not isinstance(payload, dict):
+                return
+            for key in list(self.layerVisibility.keys()):
+                if key in payload:
+                    self.layerVisibility[key] = bool(payload[key])
+        except Exception:
+            logger.debug('failed to load map layer visibility settings', exc_info=True)
+
+    def _saveLayerVisibility(self):
+        path = self._getLayerVisibilityPath()
+        try:
+            with open(path, 'w') as f:
+                json.dump(self.layerVisibility, f, indent=2, sort_keys=True)
+            return True
+        except Exception:
+            logger.debug('failed to save map layer visibility settings', exc_info=True)
+            return False
         
     def toolSelected(self,evt):
         self.mode = evt.getToolType()
