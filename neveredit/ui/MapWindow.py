@@ -1313,17 +1313,23 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
     def _drawAmbientLegendOverlay(self):
         highlighted = self.getThingHit(self.highlight) if self.highlight is not None else None
         selected = self.getThingHit(self.selected[0]) if self.selected else None
+        target = selected if selected is not None else highlighted
         show = (self.mode == ToolPalette.AMBIENT_SOUND_TOOL or
                 (highlighted is not None and hasattr(highlighted, 'getRadius')) or
                 (selected is not None and hasattr(selected, 'getRadius')))
         if not show:
             return
 
+        model_text = 'linear'
+        if target is not None and hasattr(target, 'hasProperty') and target.hasProperty('AttenuationModel'):
+            model_text = self._attenuationModelName(self._getAttenuationModel(target))
+
         lines = [
             'Ambient Tool: edge-drag resize | wheel adjust new radius',
             'K: preview %s  L: lighting %s  E: cycle SSF event'
             % ('on' if self.ambientPreviewEnabled else 'off',
-               'night' if self.previewNightLighting else 'day')
+               'night' if self.previewNightLighting else 'day'),
+            'M: attenuation model (%s)' % model_text
         ]
 
         y = self.height - 18
