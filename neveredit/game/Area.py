@@ -8,6 +8,7 @@ from neveredit.game.Item import ItemInstance
 from neveredit.game.Creature import CreatureInstance
 from neveredit.game.Tile import Tile
 from neveredit.game.WayPoint import WayPointInstance
+from neveredit.game.Sound import SoundInstance
 from neveredit.util import neverglobals
 
 class Area (NeverData.NeverData):
@@ -99,6 +100,7 @@ class Area (NeverData.NeverData):
         self.itemList = None
         self.tileList = None
         self.waypointList = None
+        self.soundList = None
         
     def readContents(self):
         if self.creatureList == None:
@@ -112,6 +114,23 @@ class Area (NeverData.NeverData):
             self.itemList = [ItemInstance(item) for item in items]
             waypoints = self.gffstructDict['git'].getInterpretedEntry('WaypointList') or []
             self.waypointList = [WayPointInstance(waypoint) for waypoint in waypoints]
+            sounds = self.getSoundListStructs()
+            self.soundList = [SoundInstance(sound) for sound in sounds]
+
+    def getSoundListStructs(self):
+        git = self.gffstructDict['git']
+        for label in ('SoundList', 'Sounds', 'Sound List'):
+            value = git.getInterpretedEntry(label)
+            if value is not None:
+                return value or []
+        return []
+
+    def getSoundListLabel(self):
+        git = self.gffstructDict['git']
+        for label in ('SoundList', 'Sounds', 'Sound List'):
+            if git.getInterpretedEntry(label) is not None:
+                return label
+        return 'SoundList'
 
     def _ensureGitList(self, label):
         git = self.gffstructDict['git']
@@ -130,6 +149,7 @@ class Area (NeverData.NeverData):
         self.placeableList = None
         self.itemList = None
         self.waypointList = None
+        self.soundList = None
         
     def readTiles(self):
         if not self.tileList:
@@ -182,6 +202,10 @@ class Area (NeverData.NeverData):
         self.readContents()
         return self.waypointList
 
+    def getSounds(self):
+        self.readContents()
+        return self.soundList
+
     def addThing(self,thing):
         logger.info('trying to add thing ' + repr(thing.getNevereditId()) + ' (class ' + repr(thing.__class__) + ') to area')
         gff = thing.getMainGFFStruct()
@@ -204,6 +228,9 @@ class Area (NeverData.NeverData):
         elif isinstance(thing, WayPointInstance):
             self._ensureGitList('WaypointList').append(gff)
             self.waypointList.append(thing)
+        elif isinstance(thing, SoundInstance):
+            self._ensureGitList(self.getSoundListLabel()).append(gff)
+            self.soundList.append(thing)
         
     def getTileSet(self):
         resref = self.gffstructDict['are'].getInterpretedEntry('Tileset')

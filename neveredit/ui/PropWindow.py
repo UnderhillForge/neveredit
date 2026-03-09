@@ -165,8 +165,62 @@ class PropWindow(scrolled.ScrolledPanel, ResourceListChangeListener):
             typeSpec = prop.getSpec()
             if typeSpec[0] == "ResRef":
                 self.updateResRefControl(propControl.control,typeSpec,prop)
+                self.updateSoundSetControlState(propControl.control, typeSpec, prop)
             elif typeSpec[0] == "CExoString" and len(typeSpec) > 1:
                 self.updateCustomChoiceControl(propControl.control,typeSpec,prop)
+
+    def isSoundSetResRef(self, typeSpec, prop):
+        if not typeSpec or typeSpec[0] != 'ResRef':
+            return False
+        if len(typeSpec) > 1 and str(typeSpec[1]).upper() == 'SSF':
+            return True
+        name = str(prop.getName() or '').lower()
+        return name == 'soundset'
+
+    def _normalizeResRefValue(self, value):
+        if value is None:
+            return ''
+        if isinstance(value, bytes):
+            return value.decode('latin1', 'ignore').strip('\0').strip()
+        return str(value).strip('\0').strip()
+
+    def _soundSetExists(self, resref):
+        if not resref:
+            return True
+        rm = neverglobals.getResourceManager()
+        candidates = [resref]
+        if not resref.lower().endswith('.ssf'):
+            candidates.insert(0, resref + '.ssf')
+        for candidate in candidates:
+            try:
+                if rm.getResourceByName(candidate) is not None:
+                    return True
+            except Exception:
+                continue
+        return False
+
+    def updateSoundSetControlState(self, control, typeSpec, prop):
+        if control is None or not self.isSoundSetResRef(typeSpec, prop):
+            return
+
+        if not hasattr(control, '_neveredit_default_bg'):
+            control._neveredit_default_bg = control.GetBackgroundColour()
+
+        value = self._normalizeResRefValue(control.GetValue())
+        if not value:
+            control.SetToolTip('Optional SSF sound set resref.')
+            control.SetBackgroundColour(control._neveredit_default_bg)
+            control.Refresh()
+            return
+
+        exists = self._soundSetExists(value)
+        if exists:
+            control.SetToolTip('SSF found: %s' % value)
+            control.SetBackgroundColour(control._neveredit_default_bg)
+        else:
+            control.SetToolTip('Missing SSF resource: %s' % value)
+            control.SetBackgroundColour(wx.Colour(255, 220, 220))
+        control.Refresh()
     
     def makePropsForItem(self,item,observer=None):
         '''Make all property controls for a given item.
@@ -349,6 +403,7 @@ class PropWindow(scrolled.ScrolledPanel, ResourceListChangeListener):
             control.Bind(wx.EVT_TEXT, self.controlUsed)
         elif type == "ResRef":
             control = self.makeResRefControl(typeSpec, prop, parent)
+            self.updateSoundSetControlState(control, typeSpec, prop)
         elif type == "BGRColour":
             blue = prop.getValue() >> 16
             green = (prop.getValue() >> 8) & (0xff)
@@ -544,6 +599,7 @@ class PropWindow(scrolled.ScrolledPanel, ResourceListChangeListener):
             #happens during construction
             return
         propControl,prop = self.propControls[event.GetId()]
+        self.updateSoundSetControlState(propControl.control, prop.getSpec(), prop)
         if prop.getName().find('Appearance') != -1:
             self.visualChanged = True
         self.propsChanged = True

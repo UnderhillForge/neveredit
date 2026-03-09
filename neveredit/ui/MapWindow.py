@@ -20,10 +20,12 @@ import copy
 from neveredit.ui.GLWindow import GLWindow
 from neveredit.ui import ToolPalette
 from neveredit.game.Module import Module
+from neveredit.game.Sound import SoundInstance
 from neveredit.game.ResourceManager import ResourceManager
 from neveredit.game.ChangeNotification import VisualChangeListener
 from neveredit.util.Progressor import Progressor
 from neveredit.util import neverglobals
+from neveredit.file.GFFFile import GFFStruct
 
 SINGLESELECTIONEVENT = wx.NewEventType()
 
@@ -173,6 +175,7 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
         self.doors = None
         self.creatures = None
         self.waypoints = None
+        self.sounds = []
         self.lock = threading.Lock()
         self.highlight = None
         self.beingDragged = None
@@ -190,6 +193,7 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
         self.lastX = 0
         self.lastY = 0
         self.Zmax = 0
+        self.previewNightLighting = None
 
         self.Bind(wx.EVT_RIGHT_DOWN, self.OnRightMouseDown)
 
@@ -211,8 +215,35 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
                                      'beingPainted',bbox=True)
                 self.preprocessedModels.add(self.beingPainted.modelName)
             self.dragOffset = (10,10)
+        elif self.mode == ToolPalette.AMBIENT_SOUND_TOOL:
+            self.beingPainted = self._newAmbientSoundInstance()
+            self.dragOffset = (10,10)
         else:
             self.beingPainted = None
+
+    def _newAmbientSoundInstance(self):
+        gff = GFFStruct(SoundInstance.GFF_STRUCT_ID)
+        gff.add('Tag', 'sound_region', 'CExoString')
+        gff.add('LocName', '', 'CExoLocString')
+        gff.add('TemplateResRef', '', 'ResRef')
+        gff.add('SoundSet', '', 'ResRef')
+        gff.add('SoundResRef', '', 'ResRef')
+        gff.add('Positional', 1, 'BYTE')
+        gff.add('Continuous', 1, 'BYTE')
+        gff.add('RandomPosition', 0, 'BYTE')
+        gff.add('Volume', 127, 'INT')
+        gff.add('VolumeVrtn', 0, 'INT')
+        gff.add('PitchVariation', 0, 'INT')
+        gff.add('MaxDistance', 6.0, 'FLOAT')
+        gff.add('MinDistance', 0.5, 'FLOAT')
+        gff.add('RandomRangeX', 0.0, 'FLOAT')
+        gff.add('RandomRangeY', 0.0, 'FLOAT')
+        gff.add('XPosition', 0.0, 'FLOAT')
+        gff.add('YPosition', 0.0, 'FLOAT')
+        gff.add('ZPosition', 0.0, 'FLOAT')
+        gff.add('XOrientation', 0.0, 'FLOAT')
+        gff.add('YOrientation', 0.0, 'FLOAT')
+        return SoundInstance(gff)
 
     def visualChanged(self,v):
         self.toPreprocess = v
@@ -289,7 +320,7 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
                 if self.selected:
                     self.selected = []
                     self.requestRedraw()
-        elif self.mode == ToolPalette.PAINT_TOOL and\
+        elif (self.mode == ToolPalette.PAINT_TOOL or self.mode == ToolPalette.AMBIENT_SOUND_TOOL) and\
              self.beingPainted:
             self.area.addThing(self.beingPainted)
             self.refreshThingList()
@@ -301,9 +332,10 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
             event = ThingAddedEvent(self.GetId(),
                                     self.beingPainted.getNevereditId())
             self.beingPainted = self.beingPainted.clone()
-            self.preprocessNodes(self.beingPainted.getModel(),
-                                 'beingPainted',
-                                 bbox=True)
+            if self.beingPainted.getModel():
+                self.preprocessNodes(self.beingPainted.getModel(),
+                                     'beingPainted',
+                                     bbox=True)
             self.GetEventHandler().AddPendingEvent(event)
 
     def OnMouseUp(self, evt):
@@ -354,6 +386,14 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
                     if intersect and intersect < closestIntersect:
                         toHighlight = id
                         closestIntersect = intersect
+                elif hasattr(thing, 'getRadius'):
+                    dx = thing.getX() - x
+                    dy = thing.getY() - y
+                    radial = math.sqrt(dx*dx + dy*dy)
+                    radius = max(0.1, float(thing.getRadius()))
+                    if radial <= radius and radial < closestIntersect:
+                        toHighlight = id
+                        closestIntersect = radial
             if toHighlight != -1:
                 thing = self.fullThingList[toHighlight]
                 before = self.highlight
@@ -453,6 +493,15 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
     def OnKeyUp(self,evt):
         self.holdZ = 0
 
+    def OnMouseWheel(self,evt):
+        if self.mode == ToolPalette.AMBIENT_SOUND_TOOL and self.beingPainted and hasattr(self.beingPainted, 'getRadius'):
+            delta = evt.GetWheelRotation()
+            step = 0.5 if delta > 0 else -0.5
+            self.beingPainted.setRadius(self.beingPainted.getRadius() + step)
+            self.requestRedraw()
+            return
+        GLWindow.OnMouseWheel(self, evt)
+
     def OnKeyDown(self,evt):
         global Numeric
         GLWindow.OnKeyDown(self,evt)        
@@ -465,6 +514,15 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
         if key_char == 'a':
             mode = self.cycleAnimationMode()
             self.setStatus('Animation mode: %s' % mode)
+            return
+
+        if key_char == 'l':
+            self.previewNightLighting = not self._isNightInAreaData()
+            if self.previewNightLighting:
+                self.setStatus('Lighting preview: night')
+            else:
+                self.setStatus('Lighting preview: day')
+            self.requestRedraw()
             return
 
         if evt.GetKeyCode() == 308: #ctrl
@@ -1023,6 +1081,7 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
             self.creatures = None
             self.tiles = None
             self.waypoints = None
+            self.sounds = None
         else:
             self.thingMap = [area.getWidth()*[None]
                              for i in range(area.getHeight())]
@@ -1039,6 +1098,7 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
             self.creatures = area.getCreatures()
             self.tiles = area.getTiles()
             self.waypoints = area.getWayPoints()
+            self.sounds = area.getSounds()
             self.preprocessed = False
             self.setProgress(0)
             self.refreshThingList()
@@ -1048,11 +1108,15 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
                 self.fullThingMap = {}
             
         self.area = area
+        if area is None:
+            self.previewNightLighting = None
+        else:
+            self.previewNightLighting = bool(self._isNightInAreaData())
         self.lock.release()
         self.requestRedraw()
 
     def refreshThingList(self):
-        self.fullThingList = self.doors + self.placeables + self.creatures + self.waypoints
+        self.fullThingList = (self.doors or []) + (self.placeables or []) + (self.creatures or []) + (self.waypoints or []) + (self.sounds or [])
         
     def getBaseWidth(self):
         if self.area:
@@ -1165,6 +1229,8 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
     def drawThing(self,thing,name):
         model = thing.getModel()
         if not model:
+            if hasattr(thing, 'getRadius'):
+                self._drawSoundThing(thing, name)
             return
         root = model.getRootNode()
         if root is None:
@@ -1192,6 +1258,76 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
         finally:
             #glPopName()
             glPopMatrix()
+
+    def _drawSoundCircle(self, radius, filled=False, segments=32):
+        if radius <= 0.0:
+            return
+        primitive = GL_POLYGON if filled else GL_LINE_LOOP
+        glBegin(primitive)
+        for i in range(segments):
+            theta = (2.0 * math.pi * float(i)) / float(segments)
+            glVertex3f(math.cos(theta) * radius,
+                       math.sin(theta) * radius,
+                       0.0)
+        glEnd()
+
+    def _drawSoundThing(self, thing, name):
+        radius = max(0.25, float(thing.getRadius()))
+        glPushMatrix()
+        try:
+            glTranslatef(thing.getX(), thing.getY(), thing.getZ())
+            if self.highlight == name:
+                (self.highlightBox.x,
+                 self.highlightBox.y,
+                 self.highlightBox.z) = self.project(0,0,0)
+            if thing.getObjectId() in self.textBoxes:
+                box = self.textBoxes[thing.getObjectId()]
+                (box.x,box.y,box.z) = self.project(0,0,0)
+
+            self.solidColourOn()
+            try:
+                if name in self.selected:
+                    self.glColorf((0.15, 0.9, 0.15, 0.8))
+                    self._drawSoundCircle(radius * 1.02, filled=False, segments=48)
+                if self.highlight == name:
+                    self.glColorf((0.1, 0.1, 1.0, 0.8))
+                    self._drawSoundCircle(radius, filled=False, segments=48)
+                else:
+                    self.glColorf((0.1, 0.75, 0.9, 0.7))
+                    self._drawSoundCircle(radius, filled=False, segments=32)
+            finally:
+                self.solidColourOff()
+        finally:
+            glPopMatrix()
+
+    def _bgrToRgbFloat(self, bgrValue, defaultColour):
+        try:
+            value = int(bgrValue)
+        except (TypeError, ValueError):
+            return defaultColour
+        blue = (value >> 16) & 0xFF
+        green = (value >> 8) & 0xFF
+        red = value & 0xFF
+        return (red / 255.0, green / 255.0, blue / 255.0)
+
+    def _isNightInAreaData(self):
+        if not self.area:
+            return False
+        try:
+            return bool(int(self.area['IsNight']))
+        except (TypeError, ValueError):
+            return bool(self.area['IsNight'])
+
+    def _getLightingPreview(self):
+        isNight = bool(self.previewNightLighting)
+        if isNight:
+            ambient = self._bgrToRgbFloat(self.area['MoonAmbientColor'], (0.18, 0.18, 0.24))
+            diffuse = self._bgrToRgbFloat(self.area['MoonDiffuseColor'], (0.55, 0.58, 0.62))
+        else:
+            # NWN stores ambient for night; day ambience is approximated from fog.
+            ambient = self._bgrToRgbFloat(self.area['SunFogColor'], (0.22, 0.22, 0.22))
+            diffuse = self._bgrToRgbFloat(self.area['SunDiffuseColor'], (0.95, 0.95, 0.9))
+        return ambient, diffuse
 
     def _isUsableBoundingBox(self, box):
         if box is None:
@@ -1291,9 +1427,9 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
                 return
             self.setupCamera()
 
-            glLightfv(GL_LIGHT0,GL_AMBIENT,[0.0,0.0,0.0,1.0])
-#            glLightfv(GL_LIGHT0,GL_EMISSION,[0.0,0.0,0.0,1.0])
-            glLightfv(GL_LIGHT0,GL_DIFFUSE,[1.0,1.0,1.0,1.0])
+            ambient, diffuse = self._getLightingPreview()
+            glLightfv(GL_LIGHT0,GL_AMBIENT,[ambient[0], ambient[1], ambient[2], 1.0])
+            glLightfv(GL_LIGHT0,GL_DIFFUSE,[diffuse[0], diffuse[1], diffuse[2], 1.0])
             glLightfv(GL_LIGHT0,GL_SPECULAR,[1.0,1.0,1.0,1.0])
             glLightfv(GL_LIGHT0,GL_POSITION,[self.viewX,
                                              self.viewY,

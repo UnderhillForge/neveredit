@@ -116,6 +116,7 @@ class ToolSelectionEvent(wx.PyCommandEvent):
 SELECTION_TOOL = wx.NewId()
 ROTATE_TOOL = wx.NewId()
 PAINT_TOOL = wx.NewId()
+AMBIENT_SOUND_TOOL = wx.NewId()
 
 class ToolFrame(wx.MiniFrame):
     def __init__(self):
@@ -158,10 +159,18 @@ class ToolFrame(wx.MiniFrame):
                      kind=wx.ITEM_RADIO,
                      shortHelp=('Rotate Object'),
                      longHelp=('Rotate object shown on Map'))
+        self.soundId = AMBIENT_SOUND_TOOL
+        self.toolbar.AddTool(self.soundId,
+                 "Ambient Sound",
+                 paint_icon_png.getBitmap(),
+                 paint_icon_sel_png.getBitmap(),
+                 kind=wx.ITEM_RADIO,
+                 shortHelp='Place Ambient Sound Region',
+                 longHelp='Place and move ambient sound radius regions')
         self.Bind(wx.EVT_TOOL,self.toolSelected)
         self.toolbar.AddSeparator()
         self.toolbar.Realize()
-        self.toolIds = [self.selectId,self.paintId,self.rotateId]
+        self.toolIds = [self.selectId,self.paintId,self.rotateId,self.soundId]
 
         sublist = [ptype for ptype in Palette.PALETTE_TYPES
                    if ptype not in ['Sound','Encounter',

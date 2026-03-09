@@ -658,18 +658,24 @@ class NeverEditMainWindow(wx.Frame,PropertyChangeListener):
             self.showScriptEditor();
             self.showScriptEditorFix = False
         if self.selectThisItem != None:
-            self.selectTreeItemById(self.selectThisItem)
+            if callable(self.selectThisItem):
+                logger.warning('ignoring callable selectThisItem value: %r', self.selectThisItem)
+            else:
+                self.selectTreeItemById(self.selectThisItem)
             self.selectThisItem = None
 
     def selectTreeItemById(self,oid):
         '''try to find an item in the current module by object id and
         select the corresponding tree item'''
+        if callable(oid):
+            logger.warning('cannot select tree item for callable id value: %r', oid)
+            return
         item = self.idToTreeItemMap.get(oid,None)
         if item:
             self.tree.EnsureVisible(item)
             self.tree.SelectItem(item)
         else:
-            logger.warning('cannot find tree item with id %d' % id)
+            logger.warning('cannot find tree item with id %r', oid)
         
     def OnScriptAdded(self,event):
         """event handler for new script being added to module"""
