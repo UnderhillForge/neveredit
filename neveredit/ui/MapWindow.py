@@ -228,6 +228,7 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
             'showWaypoints': True,
             'showPaths': True,
         }
+        self.mapLayersWindowGeometry = None
         self._loadLayerVisibility()
         self.mapLayersWindow = None
 
@@ -240,6 +241,8 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
         
     def Destroy(self):
         self._save2DDraftForCurrentArea()
+        if self.mapLayersWindow is not None:
+            self._onMapLayersGeometryChanged(self.mapLayersWindow.getWindowGeometry())
         self._saveLayerVisibility()
         if self.mapLayersWindow is not None:
             try:
@@ -253,7 +256,12 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
 
     def _ensureMapLayersWindow(self):
         if self.mapLayersWindow is None:
-            self.mapLayersWindow = MapLayersWindow(self, self._onMapLayerVisibilityChanged, self.layerVisibility)
+            self.mapLayersWindow = MapLayersWindow(self,
+                                                  self._onMapLayerVisibilityChanged,
+                                                  self.layerVisibility,
+                                                  self._onMapLayersGeometryChanged)
+            if self.mapLayersWindowGeometry:
+                self.mapLayersWindow.applyWindowGeometry(self.mapLayersWindowGeometry)
         return self.mapLayersWindow
 
     def _onMapLayerVisibilityChanged(self, layerState):
@@ -262,6 +270,17 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
                 self.layerVisibility[key] = bool(value)
         self._saveLayerVisibility()
         self.requestRedraw()
+
+    def _onMapLayersGeometryChanged(self, geometry):
+        if not isinstance(geometry, dict):
+            return
+        self.mapLayersWindowGeometry = {
+            'x': int(geometry.get('x', 0)),
+            'y': int(geometry.get('y', 0)),
+            'w': int(geometry.get('w', 250)),
+            'h': int(geometry.get('h', 250)),
+        }
+        self._saveLayerVisibility()
 
     def _getLayerVisibilityPath(self):
         repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -276,9 +295,19 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
                 payload = json.load(f)
             if not isinstance(payload, dict):
                 return
-            for key in list(self.layerVisibility.keys()):
-                if key in payload:
-                    self.layerVisibility[key] = bool(payload[key])
+            layer_payload = payload.get('layers', payload)
+            if isinstance(layer_payload, dict):
+                for key in list(self.layerVisibility.keys()):
+                    if key in layer_payload:
+                        self.layerVisibility[key] = bool(layer_payload[key])
+            geom = payload.get('mapLayersWindow')
+            if isinstance(geom, dict):
+                self.mapLayersWindowGeometry = {
+                    'x': int(geom.get('x', 0)),
+                    'y': int(geom.get('y', 0)),
+                    'w': int(geom.get('w', 250)),
+                    'h': int(geom.get('h', 250)),
+                }
         except Exception:
             logger.debug('failed to load map layer visibility settings', exc_info=True)
 
@@ -286,7 +315,11 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
         path = self._getLayerVisibilityPath()
         try:
             with open(path, 'w') as f:
-                json.dump(self.layerVisibility, f, indent=2, sort_keys=True)
+                payload = {
+                    'layers': self.layerVisibility,
+                    'mapLayersWindow': self.mapLayersWindowGeometry,
+                }
+                json.dump(payload, f, indent=2, sort_keys=True)
             return True
         except Exception:
             logger.debug('failed to save map layer visibility settings', exc_info=True)
