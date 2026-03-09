@@ -456,6 +456,17 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
     def OnKeyDown(self,evt):
         global Numeric
         GLWindow.OnKeyDown(self,evt)        
+        unicode_key = evt.GetUnicodeKey()
+        if unicode_key is not None and unicode_key >= 0:
+            key_char = chr(unicode_key).lower()
+        else:
+            key_char = ''
+
+        if key_char == 'a':
+            mode = self.cycleAnimationMode()
+            self.setStatus('Animation mode: %s' % mode)
+            return
+
         if evt.GetKeyCode() == 308: #ctrl
             self.holdZ = 1
         # if evt.GetKeyCode() == wx.WXK_SPACE:

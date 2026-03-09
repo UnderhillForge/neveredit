@@ -77,6 +77,22 @@ class GLWindow(glcanvas.GLCanvas):
         self._skinDeformedVertexCache = None
         self._skinDeformedNormalCache = None
         self._activePLTTintContext = None
+        self._activeAnimationNodes = None
+        self._superModelCache = {}
+        self._loggedAnimationTrackBindings = set()
+        self.animationsEnabled = True
+        self.animationMode = 'idle'
+        self.animationModes = ('idle', 'walk')
+        self.animationSpeedByMode = {'idle': 1.0, 'walk': 1.8}
+        self.animationTrackByMode = {
+            'idle': ('pause1', 'pause', 'idle', 'ready1', 'default'),
+            'walk': ('walk', 'walk01', 'walk1', 'run', 'run1'),
+        }
+        self._animationStartTime = time.time()
+        self._animationTimeSeconds = 0.0
+        self._animationTimer = wx.Timer(self)
+        self.Bind(wx.EVT_TIMER, self.OnAnimationTimer, self._animationTimer)
+        self._animationTimer.Start(33)
         
         self.Bind(wx.EVT_ERASE_BACKGROUND, self.OnEraseBackground)
         self.Bind(wx.EVT_SIZE, self.OnSize)
@@ -90,6 +106,54 @@ class GLWindow(glcanvas.GLCanvas):
 
     def OnEraseBackground(self, event):
         pass
+
+    def OnAnimationTimer(self, event):
+        if not self.animationsEnabled:
+            return
+        if self.preprocessing:
+            return
+        self.requestRedraw()
+
+    def getAnimationMode(self):
+        return self.animationMode
+
+    def setAnimationMode(self, mode):
+        if mode not in self.animationModes:
+            return self.animationMode
+        self.animationMode = mode
+        self._animationStartTime = time.time()
+        self._loggedAnimationTrackBindings.clear()
+        self.requestRedraw()
+        return self.animationMode
+
+    def _logAnimationTrackBinding(self, model, source, track_name, node_count):
+        model_name = '<unknown>'
+        if model is not None and hasattr(model, 'getName'):
+            try:
+                model_name = str(model.getName())
+            except Exception:
+                model_name = '<unknown>'
+
+        key = (self.animationMode, model_name, source, str(track_name or '<none>'))
+        if key in self._loggedAnimationTrackBindings:
+            return
+        self._loggedAnimationTrackBindings.add(key)
+
+        logger.debug('animation bind mode=%s model=%s source=%s track=%s nodes=%s',
+                     self.animationMode,
+                     model_name,
+                     source,
+                     str(track_name or '<none>'),
+                     str(node_count))
+
+    def cycleAnimationMode(self):
+        current = self.animationMode
+        try:
+            index = self.animationModes.index(current)
+        except ValueError:
+            index = -1
+        next_mode = self.animationModes[(index + 1) % len(self.animationModes)]
+        return self.setAnimationMode(next_mode)
 
     def makeCurrent(self):
         '''Activate GL context on wx versions that require an explicit context.'''
@@ -310,7 +374,7 @@ class GLWindow(glcanvas.GLCanvas):
         previous_tint_context = self._activePLTTintContext
         self._activePLTTintContext = getattr(model, 'pltTintContext', None)
         try:
-            self.preprocessNodesHelper(root,tag,0)
+            self.preprocessNodesHelper(root,tag,0,model)
         finally:
             self._activePLTTintContext = previous_tint_context
         if bbox and not model.validBoundingBox:
@@ -326,9 +390,11 @@ class GLWindow(glcanvas.GLCanvas):
         #model.setPreprocessed(True)
         return True
         
-    def preprocessNodesHelper(self,node,tag,level):
+    def preprocessNodesHelper(self,node,tag,level,model=None):
         if node is None:
             return
+        if model is not None:
+            node._ownerModel = model
         node.controllerDisplayList = glGenLists(1)
         glNewList(node.controllerDisplayList,GL_COMPILE)
         self.processControllers(node)
@@ -342,7 +408,64 @@ class GLWindow(glcanvas.GLCanvas):
             self._ensureNodeTextureGL(node,1)
                     
         for c in node.children:
-            self.preprocessNodesHelper(c,tag,level+1)
+            self.preprocessNodesHelper(c,tag,level+1,model)
+
+    def _resolveAnimationNodesForModel(self, model):
+        if model is None or not self.animationsEnabled:
+            return None
+        if not hasattr(model, 'resolveAnimationTrack'):
+            return None
+        preferred = self.animationTrackByMode.get(self.animationMode, ())
+        track_name = model.resolveAnimationTrack(preferred)
+        if track_name:
+            nodes = model.getAnimationNodes(track_name)
+            if nodes:
+                self._logAnimationTrackBinding(model, 'model', track_name, len(nodes))
+                return nodes
+
+        # Fall back to supermodel track tables when available.
+        super_name = str(getattr(model, 'superModelName', '') or '').strip().lower()
+        if not super_name or super_name in ('null', '****'):
+            return None
+
+        if super_name not in self._superModelCache:
+            rm = neverglobals.getResourceManager()
+            candidates = [super_name]
+            if not super_name.endswith('.mdl'):
+                candidates.insert(0, super_name + '.mdl')
+
+            loaded = None
+            for candidate in candidates:
+                loaded = rm.getResourceByName(candidate)
+                if loaded is not None:
+                    break
+            self._superModelCache[super_name] = loaded
+
+        super_model = self._superModelCache.get(super_name)
+        if super_model is None or not hasattr(super_model, 'resolveAnimationTrack'):
+            self._logAnimationTrackBinding(model, 'supermodel-missing', None, 0)
+            return None
+        super_track = super_model.resolveAnimationTrack(preferred)
+        if not super_track:
+            self._logAnimationTrackBinding(model, 'supermodel-no-track', None, 0)
+            return None
+        nodes = super_model.getAnimationNodes(super_track)
+        if not nodes:
+            self._logAnimationTrackBinding(model, 'supermodel-empty-track', super_track, 0)
+            return None
+        self._logAnimationTrackBinding(model, 'supermodel', super_track, len(nodes))
+        return nodes
+
+    def _getActiveControllerNode(self, node):
+        if not self._activeAnimationNodes:
+            return node
+        name = getattr(node, 'name', None)
+        if not name:
+            return node
+        track_node = self._activeAnimationNodes.get(name)
+        if track_node is None:
+            return node
+        return track_node
 
     def _ensureNodeTextureGL(self,node,slot):
         tex_attr = 'texture%d' % slot
@@ -378,10 +501,10 @@ class GLWindow(glcanvas.GLCanvas):
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR)
             try:
                 w, h, image = tex.size[0], tex.size[1], tex.tobytes('raw', 'RGBA', 0, -1)
-            except SystemError:
+            except (SystemError, ValueError, OSError):
                 try:
                     w, h, image = tex.size[0], tex.size[1], tex.tobytes('raw', 'RGBX', 0, -1)
-                except SystemError:
+                except (SystemError, ValueError, OSError):
                     tex = tex.convert('RGBA')
                     setattr(node, tex_attr, tex)
                     w, h, image = tex.size[0], tex.size[1], tex.tobytes('raw', 'RGBA', 0, -1)
@@ -454,15 +577,30 @@ class GLWindow(glcanvas.GLCanvas):
         numpymatrix = Numeric.array(matrix,'d')
         return numpymatrix
 
-    def processControllers(self,node):
-        if node.position is not None:
+    def processControllers(self,node,animationTime=None):
+        controller_node = self._getActiveControllerNode(node)
+        controller_map = getattr(controller_node, 'controllers', None)
+
+        if animationTime is not None and hasattr(node, 'getAnimatedPositionFromMap'):
+            p = node.getAnimatedPositionFromMap(controller_map, animationTime)
+        else:
             p = node.position
+        if p is not None:
             glTranslate(p[0],p[1],p[2])
-        if node.orientation is not None:
-            node.orientation = self.fixMatrixToNumPy(node.orientation)
-            glMultMatrixf(node.orientation)
-        if node.scale:
+
+        if animationTime is not None and hasattr(node, 'getAnimatedOrientationMatrixFromMap'):
+            orientation = node.getAnimatedOrientationMatrixFromMap(controller_map, animationTime)
+        else:
+            orientation = node.orientation
+        if orientation is not None:
+            orientation = self.fixMatrixToNumPy(orientation)
+            glMultMatrixf(orientation)
+
+        if animationTime is not None and hasattr(node, 'getAnimatedScaleFromMap'):
+            s = node.getAnimatedScaleFromMap(controller_map, animationTime)
+        else:
             s = node.scale
+        if s:
             glScalef(s,s,s)
 
     def processColours(self,node):
@@ -674,9 +812,7 @@ class GLWindow(glcanvas.GLCanvas):
             return
         glPushMatrix()
         try:
-            controller_list = getattr(node, 'controllerDisplayList', None)
-            if controller_list:
-                glCallList(controller_list)
+            self.processControllers(node, self._animationTimeSeconds)
             node_id = getattr(node, 'nodeNumber', None)
             if node_id is not None:
                 mv = Numeric.array(glGetDoublev(GL_MODELVIEW_MATRIX), 'd')
@@ -1014,6 +1150,10 @@ class GLWindow(glcanvas.GLCanvas):
         previous_rest_inv = self._skinRestInverseMatrices
         previous_vertex_cache = self._skinDeformedVertexCache
         previous_normal_cache = self._skinDeformedNormalCache
+        previous_animation_nodes = self._activeAnimationNodes
+
+        owner_model = getattr(node, '_ownerModel', None)
+        self._activeAnimationNodes = self._resolveAnimationNodesForModel(owner_model)
 
         self._prepareSkinningState(node)
         if frustumCull:
@@ -1032,6 +1172,7 @@ class GLWindow(glcanvas.GLCanvas):
             self._skinRestInverseMatrices = previous_rest_inv
             self._skinDeformedVertexCache = previous_vertex_cache
             self._skinDeformedNormalCache = previous_normal_cache
+            self._activeAnimationNodes = previous_animation_nodes
             
     def handleNodeHelper(self,node,
                    frustumCull=False,
@@ -1041,9 +1182,7 @@ class GLWindow(glcanvas.GLCanvas):
             return False
         glPushMatrix()
         try:
-            controller_list = getattr(node, 'controllerDisplayList', None)
-            if controller_list:
-                glCallList(controller_list)
+            self.processControllers(node, self._animationTimeSeconds)
             drewSomething = False
             if frustumCull and hasattr(node, 'boundingBox') and node.boundingBox[1][0]:
                 #print node.name,self.transformPointModel(node.boundingSphere[0]),
@@ -1437,6 +1576,12 @@ class GLWindow(glcanvas.GLCanvas):
     def DrawGLScene(self):
         self.redrawRequested = False
         self.makeCurrent()
+        if self.animationsEnabled:
+            elapsed = max(0.0, time.time() - self._animationStartTime)
+            speed = self.animationSpeedByMode.get(self.animationMode, 1.0)
+            self._animationTimeSeconds = elapsed * speed
+        else:
+            self._animationTimeSeconds = 0.0
         if self.preprocessing:
             return
         if not self.preprocessed:

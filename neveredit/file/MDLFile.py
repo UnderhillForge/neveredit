@@ -1,6 +1,7 @@
 import sys,string,math
 import copy
 import logging
+import bisect
 
 from neveredit.util import Utils
 Numeric = Utils.getNumPy()
@@ -135,6 +136,65 @@ class Controller:
 
     def getValue(self,i=0):
         return self.data[self.numColumns*i:self.numColumns*i+self.numColumns+1]
+
+    def getRowCount(self):
+        return int(max(0, self.numRows))
+
+    def getDuration(self):
+        keys = self.getTimeKeys()
+        if not keys or len(keys) < 2:
+            return 0.0
+        try:
+            return max(0.0, float(keys[-1]) - float(keys[0]))
+        except Exception:
+            return 0.0
+
+    def getInterpolatedValue(self, timeSeconds):
+        row_count = self.getRowCount()
+        if row_count <= 1:
+            return self.getValue(0)
+
+        keys = self.getTimeKeys()
+        if not keys or len(keys) < row_count:
+            return self.getValue(0)
+
+        try:
+            start = float(keys[0])
+            end = float(keys[row_count - 1])
+        except Exception:
+            return self.getValue(0)
+
+        duration = end - start
+        if duration <= 0.0:
+            return self.getValue(0)
+
+        t = ((float(timeSeconds) - start) % duration) + start
+        if t <= start:
+            return self.getValue(0)
+        if t >= end:
+            return self.getValue(row_count - 1)
+
+        key_values = [float(keys[i]) for i in range(row_count)]
+        right = bisect.bisect_right(key_values, t)
+        if right <= 0:
+            return self.getValue(0)
+        if right >= row_count:
+            return self.getValue(row_count - 1)
+
+        left = right - 1
+        t0 = key_values[left]
+        t1 = key_values[right]
+        if t1 <= t0:
+            return self.getValue(left)
+
+        v0 = self.getValue(left)
+        v1 = self.getValue(right)
+        alpha = (t - t0) / (t1 - t0)
+        count = int(min(len(v0), len(v1), max(1, self.numColumns)))
+        out = []
+        for i in range(count):
+            out.append(float(v0[i]) + (float(v1[i]) - float(v0[i])) * alpha)
+        return out
     
     def typeAsString(self):
         return self.type
@@ -256,6 +316,95 @@ class Node:
             self.orientation = c.rotationMatrix
         elif ctype == 'scale':
             self.scale = c.getValue()[0]
+
+    def _primaryController(self,ctype):
+        controllers = self.getControllers(ctype)
+        if not controllers:
+            return None
+        return controllers[0]
+
+    def _primaryControllerFromMap(self,controllerMap,ctype):
+        if not isinstance(controllerMap, dict):
+            return None
+        controllers = controllerMap.get(ctype, [])
+        if not controllers:
+            return None
+        return controllers[0]
+
+    def getControllerValueAtTime(self,ctype,timeSeconds):
+        controller = self._primaryController(ctype)
+        if controller is None:
+            return None
+        try:
+            return controller.getInterpolatedValue(timeSeconds)
+        except Exception:
+            return controller.getValue(0)
+
+    def getControllerValueAtTimeFromMap(self,controllerMap,ctype,timeSeconds):
+        controller = self._primaryControllerFromMap(controllerMap, ctype)
+        if controller is None:
+            return None
+        try:
+            return controller.getInterpolatedValue(timeSeconds)
+        except Exception:
+            return controller.getValue(0)
+
+    def getAnimatedPosition(self,timeSeconds):
+        value = self.getControllerValueAtTime('position',timeSeconds)
+        if value is None:
+            return self.position
+        return value[:3]
+
+    def getAnimatedPositionFromMap(self,controllerMap,timeSeconds):
+        value = self.getControllerValueAtTimeFromMap(controllerMap, 'position', timeSeconds)
+        if value is None:
+            return self.position
+        return value[:3]
+
+    def getAnimatedScale(self,timeSeconds):
+        value = self.getControllerValueAtTime('scale',timeSeconds)
+        if value is None or len(value) == 0:
+            return self.scale
+        return value[0]
+
+    def getAnimatedScaleFromMap(self,controllerMap,timeSeconds):
+        value = self.getControllerValueAtTimeFromMap(controllerMap, 'scale', timeSeconds)
+        if value is None or len(value) == 0:
+            return self.scale
+        return value[0]
+
+    def getAnimatedOrientationMatrix(self,timeSeconds):
+        value = self.getControllerValueAtTime('orientation',timeSeconds)
+        if value is None or len(value) < 4:
+            return self.orientation
+        quat = [float(value[0]), float(value[1]), float(value[2]), float(value[3])]
+        if quat[0] == quat[1] == quat[2] == quat[3] == 0.0:
+            quat[3] = 1.0
+        quat.insert(0,quat.pop())
+        q = quaternion.Quaternion(quat)
+        return q.matrix()
+
+    def getAnimatedOrientationMatrixFromMap(self,controllerMap,timeSeconds):
+        value = self.getControllerValueAtTimeFromMap(controllerMap, 'orientation', timeSeconds)
+        if value is None or len(value) < 4:
+            return self.orientation
+        quat = [float(value[0]), float(value[1]), float(value[2]), float(value[3])]
+        if quat[0] == quat[1] == quat[2] == quat[3] == 0.0:
+            quat[3] = 1.0
+        quat.insert(0,quat.pop())
+        q = quaternion.Quaternion(quat)
+        return q.matrix()
+
+    def getControllerDuration(self):
+        durations = []
+        for controllers in list(self.controllers.values()):
+            for controller in controllers:
+                duration = controller.getDuration()
+                if duration > 0.0:
+                    durations.append(duration)
+        if not durations:
+            return 0.0
+        return max(durations)
             
     def hasController(self,ctype):
         return ctype in self.controllers
@@ -506,7 +655,32 @@ class Node:
         if not texture_name:
             return (None, None)
         base = texture_name.lower()
+        
+        # Cache extension availability per resource manager to avoid
+        # repeating expensive key lookups for every mesh node.
+        cache = getattr(resourceManager, '_textureResolveExtCache', None)
+        if cache is None:
+            cache = {}
+            setattr(resourceManager, '_textureResolveExtCache', cache)
+        
+        available_exts = cache.get(base)
+        if available_exts is None:
+            available_exts = set()
+            try:
+                available_keys = resourceManager.getKeysWithName(base)
+            except Exception:
+                available_keys = []
+        
+            for key in available_keys:
+                try:
+                    available_exts.add(resourceManager.extensionFromResType(key[1]).lower())
+                except Exception:
+                    continue
+            cache[base] = available_exts
+
         for ext in ('tga', 'dds', 'plt'):
+            if ext not in available_exts:
+                continue
             resname = base + '.' + ext
             tex = resourceManager.getResourceByName(resname)
             if tex is not None:
@@ -720,10 +894,13 @@ class Model:
         self.classification = "Unknown"
         self.rootNode = None
         self.boundingBox = Numeric.array([[0.0,0.0,0.0],[1.0,1.0,1.0]])
+        self.boundingSphere = [Numeric.array([0.5,0.5,0.5]), 0.8660254]
         self.validBoundingBox = False
         self.animScale = 1.0
         self.nodeCount = 0
         self.preprocessed = False
+        self.animations = {}
+        self.superModelName = ''
 
     def getName(self):
         root = self.getRootNode()
@@ -737,9 +914,13 @@ class Model:
     def recalculateBoundingBoxes(self):
         root = self.getRootNode()
         if root is None:
+            self.boundingSphere = [Numeric.array([0.0,0.0,0.0]), 0.0]
             self.validBoundingBox = False
             return
         self.recalculateBoundingBoxHelper(root)
+        self.boundingBox = Numeric.array(root.boundingBox)
+        self.boundingSphere = [Numeric.array(root.boundingSphere[0]), float(root.boundingSphere[1])]
+        self.validBoundingBox = True
         
     def recalculateBoundingBoxHelper(self,node):
         if node is None:
@@ -753,6 +934,48 @@ class Model:
 
     def getPreprocessed(self):
         return self.preprocessed
+
+    def addAnimationTrack(self, name, trackData):
+        if not name:
+            return
+        if trackData is None:
+            trackData = {}
+        self.animations[str(name).lower()] = trackData
+
+    def getAnimationTrack(self, name):
+        if not name:
+            return None
+        return self.animations.get(str(name).lower())
+
+    def getAnimationNames(self):
+        return list(self.animations.keys())
+
+    def resolveAnimationTrack(self, preferredNames):
+        if not preferredNames:
+            return None
+        names = self.getAnimationNames()
+        if not names:
+            return None
+
+        lowered = [str(n).lower() for n in preferredNames]
+        name_set = set(names)
+        for candidate in lowered:
+            if candidate in name_set:
+                return candidate
+        for candidate in lowered:
+            for name in names:
+                if name.startswith(candidate):
+                    return name
+        return None
+
+    def getAnimationNodes(self, trackName):
+        track = self.getAnimationTrack(trackName)
+        if not track:
+            return {}
+        nodes = track.get('nodes', {})
+        if not isinstance(nodes, dict):
+            return {}
+        return nodes
     
     def __str__(self):
         strings = []
@@ -832,6 +1055,7 @@ class MDLFile(NeverFile):
         self.model.radius = dataHandler.readFloatFile(f)
         self.model.animScale = dataHandler.readFloatFile(f)
         self.superModelName = _read_cstring(f.read(64))
+        self.model.superModelName = self.superModelName
         #print 'supermodel:',self.superModelName
 
     def nodeFromFile(self,pointer):
@@ -852,6 +1076,7 @@ class MDLFile(NeverFile):
             #print self.mdlGeometryHeader.nodeCount,'nodes'
             self.model.nodeCount = self.mdlGeometryHeader.nodeCount
             self.model.rootNode = self.nodeFromFile(self.mdlGeometryHeader.rootNodeOffset)
+            self.readBinaryAnimations()
             #print self.model
         else:
             self.readASCIIModel(f)
@@ -876,9 +1101,106 @@ class MDLFile(NeverFile):
                     self.model.rootNode = n
                     firstNode = False
                 nodes[n.name] = n
+            elif parts[0] == 'newanim':
+                self.readASCIIAnimation(parts,f)
             elif parts[0] == 'newmodel':
                 self.name = parts[1]
             line = f.readline()
+
+    def readASCIIAnimation(self,parts,f):
+        if len(parts) < 2:
+            return
+        anim_name = str(parts[1]).lower()
+        anim_nodes = {}
+        anim_length = 0.0
+        anim_root = None
+
+        line = f.readline()
+        while line:
+            tokens = line.split()
+            if not tokens:
+                line = f.readline()
+                continue
+
+            token = tokens[0].lower()
+            if token == 'length' and len(tokens) > 1:
+                try:
+                    anim_length = float(tokens[1])
+                except Exception:
+                    anim_length = 0.0
+            elif token == 'animroot' and len(tokens) > 1:
+                anim_root = tokens[1]
+            elif token == 'node' and len(tokens) > 2:
+                anim_node = self.readASCIINode(tokens[1],tokens[2],anim_nodes,f)
+                anim_nodes[anim_node.name] = anim_node
+            elif token == 'doneanim':
+                break
+            line = f.readline()
+
+        self.model.addAnimationTrack(anim_name,
+                                     {'length': anim_length,
+                                      'root': anim_root,
+                                      'nodes': anim_nodes})
+
+    def _collectNodesByName(self,node,nodeMap):
+        if node is None:
+            return
+        name = getattr(node, 'name', None)
+        if name:
+            nodeMap[name] = node
+        for child in getattr(node, 'children', []):
+            self._collectNodesByName(child, nodeMap)
+
+    def _estimateAnimationLength(self,nodeMap):
+        length = 0.0
+        for node in list(nodeMap.values()):
+            if not hasattr(node, 'getControllerDuration'):
+                continue
+            try:
+                length = max(length, float(node.getControllerDuration()))
+            except Exception:
+                continue
+        return length
+
+    def readBinaryAnimations(self):
+        array = getattr(self, 'animationHeaderPointers', None)
+        if array is None or getattr(array, 'size', 0) <= 0:
+            return
+
+        f = self.file
+        base_pos = f.tell()
+        try:
+            f.seek(array.offset)
+            pointers = dataHandler.readUIntsFile(f, array.size)
+        except Exception:
+            f.seek(base_pos)
+            return
+
+        for pointer in pointers:
+            if not pointer:
+                continue
+            try:
+                anim_offset = self.modelPointerToOffset(pointer)
+                f.seek(anim_offset)
+                gh = self.geometryHeaderFromFile(f)
+                anim_root = self.nodeFromFile(gh.rootNodeOffset)
+            except Exception:
+                continue
+
+            if anim_root is None:
+                continue
+
+            node_map = {}
+            self._collectNodesByName(anim_root, node_map)
+            anim_name = str(getattr(gh, 'name', '') or '').strip().lower()
+            if not anim_name:
+                continue
+            self.model.addAnimationTrack(anim_name,
+                                         {'length': self._estimateAnimationLength(node_map),
+                                          'root': anim_root.getName(),
+                                          'nodes': node_map})
+
+        f.seek(base_pos)
 
     def readASCIINode(self,type,name,nodes,f):
         n = Node()
