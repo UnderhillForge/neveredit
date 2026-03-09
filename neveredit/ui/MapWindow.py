@@ -9,6 +9,7 @@ from OpenGL.GL import *
 from OpenGL.GLUT import *
 from OpenGL.GLU import *
 import sys
+import io
 import copy
 import threading
 import math
@@ -26,6 +27,7 @@ from neveredit.game.ChangeNotification import VisualChangeListener
 from neveredit.util.Progressor import Progressor
 from neveredit.util import neverglobals
 from neveredit.file.GFFFile import GFFStruct
+from neveredit.file import SoundSetFile
 
 SINGLESELECTIONEVENT = wx.NewEventType()
 
@@ -194,6 +196,13 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
         self.lastY = 0
         self.Zmax = 0
         self.previewNightLighting = None
+        self.ambientPreviewEnabled = False
+        self._ambientPreviewLastUpdate = 0.0
+        self._ambientPreviewSoundKey = None
+        self._ambientPreviewMixerReady = False
+        self._ambientPreviewChannel = None
+        self._ambientPreviewSoundObj = None
+        self._ambientPreviewRawCache = {}
 
         self.Bind(wx.EVT_RIGHT_DOWN, self.OnRightMouseDown)
 
@@ -203,6 +212,7 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
         self._missingModelWarnings = set()
         
     def Destroy(self):
+        self._stopAmbientPreview()
         neverglobals.getResourceManager().removeVisualChangeListener(self)
         GLWindow.Destroy(self)
         
@@ -522,6 +532,16 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
                 self.setStatus('Lighting preview: night')
             else:
                 self.setStatus('Lighting preview: day')
+            self.requestRedraw()
+            return
+
+        if key_char == 'k':
+            self.ambientPreviewEnabled = not self.ambientPreviewEnabled
+            if self.ambientPreviewEnabled:
+                self.setStatus('Ambient preview: on')
+            else:
+                self.setStatus('Ambient preview: off')
+                self._stopAmbientPreview()
             self.requestRedraw()
             return
 
@@ -1110,6 +1130,7 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
         self.area = area
         if area is None:
             self.previewNightLighting = None
+            self._stopAmbientPreview()
         else:
             self.previewNightLighting = bool(self._isNightInAreaData())
         self.lock.release()
@@ -1329,6 +1350,141 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
             diffuse = self._bgrToRgbFloat(self.area['SunDiffuseColor'], (0.95, 0.95, 0.9))
         return ambient, diffuse
 
+    def _getListenerPosition(self):
+        if self.players:
+            for p in list(self.players.values()):
+                x = getattr(p, 'x', None)
+                y = getattr(p, 'y', None)
+                if x is not None and y is not None:
+                    return (float(x), float(y), 0.0)
+        return (float(self.lookingAtX), float(self.lookingAtY), 0.0)
+
+    def _normalizeResRef(self, value):
+        if value is None:
+            return ''
+        if isinstance(value, bytes):
+            return value.decode('latin1', 'ignore').strip('\0').strip().lower()
+        return str(value).strip('\0').strip().lower()
+
+    def _resolvePreviewWavResRef(self, sound):
+        # Prefer explicit per-instance sound resource.
+        direct = self._normalizeResRef(sound['SoundResRef'])
+        if direct:
+            return direct
+
+        # Fall back to first entry in referenced SSF set when present.
+        sound_set = self._normalizeResRef(sound['SoundSet'])
+        if sound_set:
+            rm = neverglobals.getResourceManager()
+            raw_ssf = rm.getRawResourceByName(sound_set + '.ssf')
+            if raw_ssf:
+                try:
+                    ssf = SoundSetFile.SoundSetFile()
+                    ssf.fromFile(io.BytesIO(raw_ssf))
+                    entry = ssf.getEntryData(1)
+                    if entry and len(entry) > 0:
+                        return self._normalizeResRef(entry[0])
+                except Exception:
+                    logger.debug('failed to resolve ssf preview sound for %s', sound_set, exc_info=True)
+        return ''
+
+    def _loadPreviewRawWav(self, wav_resref):
+        if not wav_resref:
+            return None
+        if wav_resref in self._ambientPreviewRawCache:
+            return self._ambientPreviewRawCache[wav_resref]
+        rm = neverglobals.getResourceManager()
+        raw = rm.getRawResourceByName(wav_resref + '.wav')
+        self._ambientPreviewRawCache[wav_resref] = raw
+        return raw
+
+    def _ensureAmbientMixer(self):
+        if self._ambientPreviewMixerReady:
+            return True
+        try:
+            import pygame.mixer
+            pygame.mixer.init(22050, -16, True, 1024)
+            self._ambientPreviewMixerReady = True
+            return True
+        except Exception:
+            logger.debug('ambient preview mixer init failed', exc_info=True)
+            return False
+
+    def _stopAmbientPreview(self):
+        self._ambientPreviewSoundKey = None
+        try:
+            if self._ambientPreviewChannel is not None:
+                self._ambientPreviewChannel.stop()
+        except Exception:
+            pass
+        self._ambientPreviewChannel = None
+        self._ambientPreviewSoundObj = None
+
+    def _playAmbientPreviewRaw(self, sound_key, raw_wav):
+        if not raw_wav:
+            self._stopAmbientPreview()
+            return
+        if not self._ensureAmbientMixer():
+            return
+        try:
+            import pygame.mixer
+            snd = pygame.mixer.Sound(io.BytesIO(raw_wav))
+            channel = snd.play(loops=-1)
+            self._ambientPreviewSoundObj = snd
+            self._ambientPreviewChannel = channel
+            self._ambientPreviewSoundKey = sound_key
+        except Exception:
+            logger.debug('ambient preview playback failed', exc_info=True)
+            self._stopAmbientPreview()
+
+    def _updateAmbientPreview(self):
+        if not self.ambientPreviewEnabled:
+            return
+        if not self.area or not self.sounds:
+            self._stopAmbientPreview()
+            return
+
+        now = time.time()
+        if now - self._ambientPreviewLastUpdate < 0.25:
+            return
+        self._ambientPreviewLastUpdate = now
+
+        lx, ly, _ = self._getListenerPosition()
+        best_sound = None
+        best_distance = None
+
+        for sound in self.sounds:
+            try:
+                sx = float(sound.getX())
+                sy = float(sound.getY())
+                radius = max(0.25, float(sound.getRadius()))
+            except Exception:
+                continue
+            dx = sx - lx
+            dy = sy - ly
+            distance = math.sqrt(dx*dx + dy*dy)
+            if distance <= radius:
+                if best_distance is None or distance < best_distance:
+                    best_distance = distance
+                    best_sound = sound
+
+        if best_sound is None:
+            self._stopAmbientPreview()
+            return
+
+        wav_resref = self._resolvePreviewWavResRef(best_sound)
+        if not wav_resref:
+            self._stopAmbientPreview()
+            return
+
+        sound_key = (best_sound.getNevereditId(), wav_resref)
+        if self._ambientPreviewSoundKey == sound_key and self._ambientPreviewChannel is not None:
+            return
+
+        self._stopAmbientPreview()
+        raw_wav = self._loadPreviewRawWav(wav_resref)
+        self._playAmbientPreviewRaw(sound_key, raw_wav)
+
     def _isUsableBoundingBox(self, box):
         if box is None:
             return False
@@ -1459,6 +1615,8 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
                     (b.x,b.y,b.z) = self.project(0.0,0.0,0.0)
                 self.renderArrowOutline(0.6,colour=(1.0,0.1,0.1,1.0))
                 glPopMatrix()
+
+            self._updateAmbientPreview()
             self.drawOverlays()
             self.SwapBuffers()
             
