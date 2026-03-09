@@ -64,6 +64,9 @@ freeze:
 install: ${FILES:%.py}
 	python setup.py install
 
+check-ambient:
+	python3 util/check_ambient_suite.py
+
 documentation: ${FILES:%.py}
 	epydoc --html -n neveredit -o html -u "http://openknights.sourceforge.net/tikiwiki/tiki-index.php?page=neveredit" ./
 
