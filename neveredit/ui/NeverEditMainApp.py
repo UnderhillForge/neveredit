@@ -319,6 +319,7 @@ class NeverEditMainWindow(wx.Frame,PropertyChangeListener):
         self.ID_ADD_RESOURCE = wx.NewId()
         self.ID_DETACH = wx.NewId()
         self.ID_PALETTE_WINDOW_MITEM = wx.NewId()
+        self.ID_MAP_LAYER_WINDOW_MITEM = wx.NewId()
         self.ID_SCRIPT_WINDOW_MITEM = wx.NewId()
         self.ID_MAIN_WINDOW_MITEM = wx.NewId()
         self.ID_CUT = wx.NewId()
@@ -376,6 +377,7 @@ class NeverEditMainWindow(wx.Frame,PropertyChangeListener):
 
         self.windowmenu = wx.Menu()
         self.windowmenu.Append(self.ID_MAIN_WINDOW_MITEM, _('Main Window'))
+        self.windowmenu.Append(self.ID_MAP_LAYER_WINDOW_MITEM, _('Map Layer'))
         self.windowmenu.Append(self.ID_PALETTE_WINDOW_MITEM, _('Palette Window'))
         self.windowmenu.Append(self.ID_SCRIPT_WINDOW_MITEM, _('Script Editor'))
         
@@ -400,6 +402,7 @@ class NeverEditMainWindow(wx.Frame,PropertyChangeListener):
         self.Bind(wx.EVT_MENU, self.exit, id=self.ID_EXIT)
         self.Bind(wx.EVT_MENU, self.help, id=self.ID_HELP)
         self.Bind(wx.EVT_MENU, self.windowMenu, id=self.ID_MAIN_WINDOW_MITEM)
+        self.Bind(wx.EVT_MENU, self.windowMenu, id=self.ID_MAP_LAYER_WINDOW_MITEM)
         self.Bind(wx.EVT_MENU, self.windowMenu, id=self.ID_SCRIPT_WINDOW_MITEM)
         self.Bind(wx.EVT_MENU, self.windowMenu, id=self.ID_PALETTE_WINDOW_MITEM)
         
@@ -1085,6 +1088,12 @@ Copyright 2003-2006'''),
         if id == self.ID_MAIN_WINDOW_MITEM:
             self.Show(True)
             self.Raise()
+        elif id == self.ID_MAP_LAYER_WINDOW_MITEM:
+            if self.map:
+                self.map.showMapLayersWindow()
+                self.map.Raise()
+            else:
+                self.SetStatusText(_('Map Layer window is available when an area map is open.'))
         elif id == self.ID_PALETTE_WINDOW_MITEM:
             self.showToolPalette()
             self.toolPalette.Raise()

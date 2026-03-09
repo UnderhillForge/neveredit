@@ -285,6 +285,22 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
             if win.IsShown():
                 win.Hide()
 
+    def showMapLayersWindow(self):
+        self.mapLayersWindowVisible = True
+        self._syncMapLayersWindowVisibility()
+        self._saveLayerVisibility()
+
+    def hideMapLayersWindow(self):
+        self.mapLayersWindowVisible = False
+        self._syncMapLayersWindowVisibility()
+        self._saveLayerVisibility()
+
+    def toggleMapLayersWindow(self):
+        self.mapLayersWindowVisible = not self.mapLayersWindowVisible
+        self._syncMapLayersWindowVisibility()
+        self._saveLayerVisibility()
+        return self.mapLayersWindowVisible
+
     def _onMapLayerVisibilityChanged(self, layerState):
         for key, value in list(layerState.items()):
             if key in self.layerVisibility:
