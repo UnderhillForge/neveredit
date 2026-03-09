@@ -22,6 +22,7 @@ import copy
 
 from neveredit.ui.GLWindow import GLWindow
 from neveredit.ui import ToolPalette
+from neveredit.ui.MapLayersWindow import MapLayersWindow
 from neveredit.game.Module import Module
 from neveredit.game.Sound import SoundInstance
 from neveredit.game.ResourceManager import ResourceManager
@@ -219,6 +220,16 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
         self.map2DShowGrid = True
         self.map2DShowOcclusion = True
 
+        self.layerVisibility = {
+            'showTiles': True,
+            'showObjects': True,
+            'showAmbient': True,
+            'showGrid': True,
+            'showWaypoints': True,
+            'showPaths': True,
+        }
+        self.mapLayersWindow = None
+
         self.Bind(wx.EVT_RIGHT_DOWN, self.OnRightMouseDown)
 
         neverglobals.getResourceManager().addVisualChangeListener(self)
@@ -228,9 +239,26 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
         
     def Destroy(self):
         self._save2DDraftForCurrentArea()
+        if self.mapLayersWindow is not None:
+            try:
+                self.mapLayersWindow.Destroy()
+            except Exception:
+                pass
+            self.mapLayersWindow = None
         self._stopAmbientPreview()
         neverglobals.getResourceManager().removeVisualChangeListener(self)
         GLWindow.Destroy(self)
+
+    def _ensureMapLayersWindow(self):
+        if self.mapLayersWindow is None:
+            self.mapLayersWindow = MapLayersWindow(self, self._onMapLayerVisibilityChanged, self.layerVisibility)
+        return self.mapLayersWindow
+
+    def _onMapLayerVisibilityChanged(self, layerState):
+        for key, value in list(layerState.items()):
+            if key in self.layerVisibility:
+                self.layerVisibility[key] = bool(value)
+        self.requestRedraw()
         
     def toolSelected(self,evt):
         self.mode = evt.getToolType()
@@ -702,6 +730,18 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
             self.ambientUse3DDistance = not self.ambientUse3DDistance
             self.setStatus('Ambient distance mode: %s' % ('3D' if self.ambientUse3DDistance else '2D'))
             self.requestRedraw()
+            return
+
+        if key_char == 'v':
+            win = self._ensureMapLayersWindow()
+            if win.IsShown():
+                win.Hide()
+                self.setStatus('Map Layers window: hidden')
+            else:
+                win.setLayers(self.layerVisibility)
+                win.Show(True)
+                win.Raise()
+                self.setStatus('Map Layers window: shown')
             return
 
         if evt.GetKeyCode() == 308: #ctrl
@@ -1300,6 +1340,18 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
 
     def refreshThingList(self):
         self.fullThingList = (self.doors or []) + (self.placeables or []) + (self.creatures or []) + (self.waypoints or []) + (self.sounds or [])
+        self.waypointIdSet = Set([w.getNevereditId() for w in (self.waypoints or [])])
+        self.soundIdSet = Set([s.getNevereditId() for s in (self.sounds or [])])
+
+    def _isThingVisibleForLayers(self, thing):
+        if thing is None:
+            return False
+        tid = thing.getNevereditId()
+        if tid in getattr(self, 'soundIdSet', Set()):
+            return bool(self.layerVisibility.get('showAmbient', True))
+        if tid in getattr(self, 'waypointIdSet', Set()):
+            return bool(self.layerVisibility.get('showWaypoints', True))
+        return bool(self.layerVisibility.get('showObjects', True))
         
     def getBaseWidth(self):
         if self.area:
@@ -1704,6 +1756,8 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
     def _draw2DGridAndPaintOverlay(self):
         if not self.area:
             return
+        if not self.layerVisibility.get('showGrid', True):
+            return
         if not self.map2DCells and not self.map2DShowGrid and self.mode != ToolPalette.MAP2D_DRAW_TOOL:
             return
 
@@ -1791,7 +1845,7 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
         lines = [
             '2D Draw: LMB paint | Ctrl+LMB raise | Alt+LMB lower | Shift+LMB toggle block',
             'RMB cycle asset at cell | Wheel +/- brush radius | C clear | X export | I import',
-            'T terrain=%s  U asset=%s  G grid=%s  O occlusion=%s  Radius=%d'
+            'T terrain=%s  U asset=%s  G grid=%s  O occlusion=%s  Radius=%d  V layers'
             % (self._get2DTerrainName(self.map2DTerrainBrush),
                self._get2DAssetName(self.map2DAssetBrush),
                'on' if self.map2DShowGrid else 'off',
@@ -2305,10 +2359,45 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
             glPopMatrix()
 
     def drawThings(self,things):
-        for t in things['tiles']:
-            self.drawTile(t[0],t[1])
+        if self.layerVisibility.get('showTiles', True):
+            for t in things['tiles']:
+                self.drawTile(t[0],t[1])
         for t in things['things']:
-            self.drawThing(t[0],t[1])
+            if self._isThingVisibleForLayers(t[0]):
+                self.drawThing(t[0],t[1])
+
+    def _drawWaypointPaths(self):
+        if not self.layerVisibility.get('showPaths', True):
+            return
+        if not self.layerVisibility.get('showWaypoints', True):
+            return
+        if not self.waypoints:
+            return
+
+        by_tag = {}
+        for w in self.waypoints:
+            tag = w['Tag']
+            if tag:
+                by_tag[str(tag)] = w
+
+        glDisable(GL_LIGHTING)
+        glDisable(GL_TEXTURE_2D)
+        self.glColorf((0.95, 0.6, 0.1, 0.85))
+        glLineWidth(2.0)
+        glBegin(GL_LINES)
+        for src in self.waypoints:
+            linked = src['LinkedTo']
+            if not linked:
+                continue
+            dst = by_tag.get(str(linked))
+            if dst is None:
+                continue
+            glVertex3f(float(src.getX()), float(src.getY()), float(src.getZ()) + 0.15)
+            glVertex3f(float(dst.getX()), float(dst.getY()), float(dst.getZ()) + 0.15)
+        glEnd()
+        glLineWidth(1.0)
+        glEnable(GL_LIGHTING)
+        glEnable(GL_TEXTURE_2D)
                 
     def drawTree(self):
         #self.vCheckCount = 0
@@ -2368,6 +2457,7 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
 
             name = 0
             self.drawTree()
+            self._drawWaypointPaths()
             self._draw2DGridAndPaintOverlay()
 
             if self.beingPainted:
