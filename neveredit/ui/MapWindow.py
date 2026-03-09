@@ -631,6 +631,14 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
                 self.setStatus('2D overlay cleared')
                 self.requestRedraw()
                 return
+            if key_char == 'x':
+                if self._export2DDraftForCurrentArea():
+                    self.requestRedraw()
+                return
+            if key_char == 'i':
+                if self._import2DDraftForCurrentArea():
+                    self.requestRedraw()
+                return
             if key_char in ['+', '=']:
                 self.map2DBrushRadius = min(8, self.map2DBrushRadius + 1)
                 self.setStatus('2D brush radius: %d' % self.map2DBrushRadius)
@@ -1511,6 +1519,30 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
         repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
         return os.path.join(repo_root, '.neveredit_2d_drafts.json')
 
+    def _sanitize2DFileStem(self, value):
+        text = str(value or 'area').strip()
+        if not text:
+            text = 'area'
+        out = []
+        for ch in text:
+            if ch.isalnum() or ch in ['-', '_']:
+                out.append(ch)
+            else:
+                out.append('_')
+        stem = ''.join(out)
+        while '__' in stem:
+            stem = stem.replace('__', '_')
+        return stem[:80]
+
+    def _get2DExportDir(self):
+        repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+        return os.path.join(repo_root, '.neveredit_2d_drafts')
+
+    def _get2DAreaExternalDraftPath(self, area=None):
+        area_key = self._get2DDraftAreaKey(area)
+        stem = self._sanitize2DFileStem(area_key)
+        return os.path.join(self._get2DExportDir(), stem + '.json')
+
     def _get2DDraftAreaKey(self, area=None):
         target = area or self.area
         if not target:
@@ -1623,6 +1655,52 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
         store[key] = self._serialize2DCells()
         self._save2DDraftStore(store)
 
+    def _export2DDraftForCurrentArea(self):
+        if not self.area:
+            self.setStatus('2D export skipped: no area loaded')
+            return False
+        if not self.map2DCells:
+            self.setStatus('2D export skipped: overlay is empty')
+            return False
+        export_dir = self._get2DExportDir()
+        try:
+            os.makedirs(export_dir)
+        except OSError:
+            pass
+        path = self._get2DAreaExternalDraftPath(self.area)
+        payload = self._serialize2DCells()
+        payload['area_key'] = self._get2DDraftAreaKey(self.area)
+        payload['version'] = 1
+        try:
+            with open(path, 'w') as f:
+                json.dump(payload, f, indent=2, sort_keys=True)
+            self.setStatus('2D draft exported: %s' % os.path.basename(path))
+            return True
+        except Exception:
+            logger.debug('failed to export 2D draft', exc_info=True)
+            self.setStatus('2D export failed')
+            return False
+
+    def _import2DDraftForCurrentArea(self):
+        if not self.area:
+            self.setStatus('2D import skipped: no area loaded')
+            return False
+        path = self._get2DAreaExternalDraftPath(self.area)
+        if not os.path.exists(path):
+            self.setStatus('2D import file not found: %s' % os.path.basename(path))
+            return False
+        try:
+            with open(path, 'r') as f:
+                payload = json.load(f)
+            self.map2DCells = self._deserialize2DCells(payload)
+            self._save2DDraftForCurrentArea()
+            self.setStatus('2D draft imported: %s' % os.path.basename(path))
+            return True
+        except Exception:
+            logger.debug('failed to import 2D draft', exc_info=True)
+            self.setStatus('2D import failed')
+            return False
+
     def _draw2DGridAndPaintOverlay(self):
         if not self.area:
             return
@@ -1712,7 +1790,7 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
             return
         lines = [
             '2D Draw: LMB paint | Ctrl+LMB raise | Alt+LMB lower | Shift+LMB toggle block',
-            'RMB cycle asset at cell | Wheel +/- brush radius | C clear overlay',
+            'RMB cycle asset at cell | Wheel +/- brush radius | C clear | X export | I import',
             'T terrain=%s  U asset=%s  G grid=%s  O occlusion=%s  Radius=%d'
             % (self._get2DTerrainName(self.map2DTerrainBrush),
                self._get2DAssetName(self.map2DAssetBrush),
