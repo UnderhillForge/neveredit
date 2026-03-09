@@ -198,10 +198,9 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
         self.previewNightLighting = None
         self.ambientPreviewEnabled = False
         self._ambientPreviewLastUpdate = 0.0
-        self._ambientPreviewSoundKey = None
         self._ambientPreviewMixerReady = False
-        self._ambientPreviewChannel = None
-        self._ambientPreviewSoundObj = None
+        self._ambientPreviewActiveVoices = {}
+        self._ambientPreviewMaxVoices = 4
         self._ambientPreviewRawCache = {}
         self._ambientPreviewSSFCountCache = {}
         self.soundRadiusEditing = None
@@ -1640,6 +1639,7 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
         try:
             import pygame.mixer
             pygame.mixer.init(22050, -16, True, 1024)
+            pygame.mixer.set_num_channels(16)
             self._ambientPreviewMixerReady = True
             return True
         except Exception:
@@ -1647,18 +1647,21 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
             return False
 
     def _stopAmbientPreview(self):
-        self._ambientPreviewSoundKey = None
-        try:
-            if self._ambientPreviewChannel is not None:
-                self._ambientPreviewChannel.stop()
-        except Exception:
-            pass
-        self._ambientPreviewChannel = None
-        self._ambientPreviewSoundObj = None
+        for _key, voice in list(self._ambientPreviewActiveVoices.items()):
+            channel = None
+            try:
+                _snd, channel = voice
+            except Exception:
+                channel = None
+            if channel is not None:
+                try:
+                    channel.stop()
+                except Exception:
+                    pass
+        self._ambientPreviewActiveVoices = {}
 
-    def _playAmbientPreviewRaw(self, sound_key, raw_wav):
+    def _playAmbientPreviewRaw(self, sound_key, raw_wav, gain):
         if not raw_wav:
-            self._stopAmbientPreview()
             return
         if not self._ensureAmbientMixer():
             return
@@ -1666,12 +1669,52 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
             import pygame.mixer
             snd = pygame.mixer.Sound(io.BytesIO(raw_wav))
             channel = snd.play(loops=-1)
-            self._ambientPreviewSoundObj = snd
-            self._ambientPreviewChannel = channel
-            self._ambientPreviewSoundKey = sound_key
+            if channel is None:
+                return
+            channel.set_volume(max(0.0, min(1.0, float(gain))))
+            self._ambientPreviewActiveVoices[sound_key] = (snd, channel)
         except Exception:
             logger.debug('ambient preview playback failed', exc_info=True)
-            self._stopAmbientPreview()
+
+    def _refreshAmbientPreviewVoices(self, entries):
+        target = {}
+        for entry in entries:
+            target[entry[0]] = entry
+
+        for sound_key, voice in list(self._ambientPreviewActiveVoices.items()):
+            if sound_key in target:
+                continue
+            channel = None
+            try:
+                _snd, channel = voice
+            except Exception:
+                channel = None
+            if channel is not None:
+                try:
+                    channel.stop()
+                except Exception:
+                    pass
+            self._ambientPreviewActiveVoices.pop(sound_key, None)
+
+        for sound_key, wav_resref, gain in entries:
+            clamped = max(0.0, min(1.0, float(gain)))
+            if sound_key in self._ambientPreviewActiveVoices:
+                channel = None
+                try:
+                    _snd, channel = self._ambientPreviewActiveVoices[sound_key]
+                except Exception:
+                    channel = None
+                if channel is not None:
+                    try:
+                        channel.set_volume(clamped)
+                        continue
+                    except Exception:
+                        pass
+                self._ambientPreviewActiveVoices.pop(sound_key, None)
+
+            raw_wav = self._loadPreviewRawWav(wav_resref)
+            if raw_wav:
+                self._playAmbientPreviewRaw(sound_key, raw_wav, clamped)
 
     def _updateAmbientPreview(self):
         if not self.ambientPreviewEnabled:
@@ -1686,8 +1729,7 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
         self._ambientPreviewLastUpdate = now
 
         lx, ly, _ = self._getListenerPosition()
-        best_sound = None
-        best_distance = None
+        candidates = []
 
         for sound in self.sounds:
             try:
@@ -1699,27 +1741,25 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
             dx = sx - lx
             dy = sy - ly
             distance = math.sqrt(dx*dx + dy*dy)
-            if distance <= radius:
-                if best_distance is None or distance < best_distance:
-                    best_distance = distance
-                    best_sound = sound
+            if distance > radius:
+                continue
 
-        if best_sound is None:
+            wav_resref = self._resolvePreviewWavResRef(sound)
+            if not wav_resref:
+                continue
+
+            gain = self._estimateSoundGainAtListener(sound, radius, self._getSoundInnerRadius(sound, radius))
+            if gain <= 0.01:
+                continue
+            sound_key = (sound.getNevereditId(), wav_resref)
+            candidates.append((sound_key, wav_resref, gain))
+
+        if not candidates:
             self._stopAmbientPreview()
             return
 
-        wav_resref = self._resolvePreviewWavResRef(best_sound)
-        if not wav_resref:
-            self._stopAmbientPreview()
-            return
-
-        sound_key = (best_sound.getNevereditId(), wav_resref)
-        if self._ambientPreviewSoundKey == sound_key and self._ambientPreviewChannel is not None:
-            return
-
-        self._stopAmbientPreview()
-        raw_wav = self._loadPreviewRawWav(wav_resref)
-        self._playAmbientPreviewRaw(sound_key, raw_wav)
+        candidates.sort(key=lambda item: item[2], reverse=True)
+        self._refreshAmbientPreviewVoices(candidates[:self._ambientPreviewMaxVoices])
 
     def _isUsableBoundingBox(self, box):
         if box is None:
