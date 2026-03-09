@@ -92,6 +92,18 @@ class MapLayersWindow(wx.MiniFrame):
             return
         w = max(220, w)
         h = max(220, h)
+
+        display_index = wx.Display.GetFromPoint(wx.Point(x, y))
+        if display_index == wx.NOT_FOUND:
+            display_index = wx.Display.GetFromWindow(self)
+        if display_index == wx.NOT_FOUND:
+            display_index = 0
+        bounds = wx.Display(display_index).GetClientArea()
+
+        max_x = bounds.x + max(0, bounds.width - w)
+        max_y = bounds.y + max(0, bounds.height - h)
+        x = min(max(x, bounds.x), max_x)
+        y = min(max(y, bounds.y), max_y)
         self.SetSize(wx.Rect(x, y, w, h))
 
     def setLayers(self, layers):

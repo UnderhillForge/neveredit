@@ -9,7 +9,7 @@ import neveredit.util.Preferences
 import neveredit.file.Language
 import sys
 
-class PreferencesDialog(wx.Dialog):
+class PreferencesDialog:
     __doc__ = globals()['__doc__']
     def __init__(self,parent,prefs=None,tablist=None):
 
@@ -26,10 +26,10 @@ class PreferencesDialog(wx.Dialog):
         resource = wx.xrc.XmlResource()
         resource.LoadFromBuffer(resourceText.encode('utf-8'))
 
-        dialog = resource.LoadDialog(parent,"PrefDialog")
-        notebook = wx.xrc.XRCCTRL(dialog,"PrefNotebook")
+        self.dialog = resource.LoadDialog(parent,"PrefDialog")
+        notebook = wx.xrc.XRCCTRL(self.dialog,"PrefNotebook")
         
-        generalPanel = wx.xrc.XRCCTRL(dialog,"GeneralPanel")
+        generalPanel = wx.xrc.XRCCTRL(self.dialog,"GeneralPanel")
         if "GeneralPanel" in self.tablist:
             self.appDirButton = DirBrowseButton(generalPanel,-1,(500,30),
                                                 labelText=_('NWN Directory'),
@@ -44,51 +44,49 @@ class PreferencesDialog(wx.Dialog):
             index = self.__getPanelIndex(notebook,generalPanel)
             notebook.DeletePage(index)
         if "ScriptEditorPanel" in self.tablist:
-            self.scriptAntiAlias = wx.xrc.XRCCTRL(dialog,"ScriptAntiAlias")
+            self.scriptAntiAlias = wx.xrc.XRCCTRL(self.dialog,"ScriptAntiAlias")
             self.scriptAntiAlias.SetValue(prefs['ScriptAntiAlias'])
-            self.scriptAutoCompile = wx.xrc.XRCCTRL(dialog,"ScriptAutoCompile")
+            self.scriptAutoCompile = wx.xrc.XRCCTRL(self.dialog,"ScriptAutoCompile")
             self.scriptAutoCompile.SetValue(prefs['ScriptAutoCompile'])
         else:
             index = self.__getPanelIndex(notebook,
-                                         wx.xrc.XRCCTRL(dialog,
+                                         wx.xrc.XRCCTRL(self.dialog,
                                                         "ScriptEditorPanel"))
             notebook.DeletePage(index)
-        if "TextPanel" in self.tablist :
-                self.DefaultLocStringLang = wx.xrc.XRCCTRL(
-                                        dialog,"DefaultLocStringLang")
-                self.DefaultLocStringLang.SetSelection(neveredit.file.Language.\
-                        convertFromBIOCode(prefs["DefaultLocStringLang"]))
+        if "TextPanel" in self.tablist:
+            self.DefaultLocStringLang = wx.xrc.XRCCTRL(
+                        self.dialog,"DefaultLocStringLang")
+            self.DefaultLocStringLang.SetSelection(neveredit.file.Language.\
+                convertFromBIOCode(prefs["DefaultLocStringLang"]))
         else:
-                index = self.__getPanelIndex(notebook,
-                                         wx.xrc.XRCCTRL(dialog, "TextPanel"))
-                notebook.DeletePage(index)
+            index = self.__getPanelIndex(notebook,
+                         wx.xrc.XRCCTRL(self.dialog, "TextPanel"))
+            notebook.DeletePage(index)
 
         # Set up the User Controls Panel
         # Create Controls
         # Fix length 
         # Set value
-        if "UserControlsPanel" in self.tablist :
-                self.mwUpKey = wx.xrc.XRCCTRL(dialog,"mwUpKey")
-                self.mwUpKey.SetMaxLength(1)
-                self.mwUpKey.SetValue(prefs['GLW_UP'])
-                self.mwDownKey = wx.xrc.XRCCTRL(dialog,"mwDownKey")
-                self.mwDownKey.SetMaxLength(1)
-                self.mwDownKey.SetValue(prefs['GLW_DOWN'])
-                self.mwLeftKey = wx.xrc.XRCCTRL(dialog,"mwLeftKey")
-                self.mwLeftKey.SetMaxLength(1)
-                self.mwLeftKey.SetValue(prefs['GLW_LEFT'])
-                self.mwRightKey = wx.xrc.XRCCTRL(dialog,"mwRightKey")
-                self.mwRightKey.SetMaxLength(1)
-                self.mwRightKey.SetValue(prefs['GLW_RIGHT'])
-                
+        if "UserControlsPanel" in self.tablist:
+            self.mwUpKey = wx.xrc.XRCCTRL(self.dialog,"mwUpKey")
+            self.mwUpKey.SetMaxLength(1)
+            self.mwUpKey.SetValue(prefs['GLW_UP'])
+            self.mwDownKey = wx.xrc.XRCCTRL(self.dialog,"mwDownKey")
+            self.mwDownKey.SetMaxLength(1)
+            self.mwDownKey.SetValue(prefs['GLW_DOWN'])
+            self.mwLeftKey = wx.xrc.XRCCTRL(self.dialog,"mwLeftKey")
+            self.mwLeftKey.SetMaxLength(1)
+            self.mwLeftKey.SetValue(prefs['GLW_LEFT'])
+            self.mwRightKey = wx.xrc.XRCCTRL(self.dialog,"mwRightKey")
+            self.mwRightKey.SetMaxLength(1)
+            self.mwRightKey.SetValue(prefs['GLW_RIGHT'])
         else:
-                index = self.__getPanelIndex(notebook,
-                                         wx.xrc.XRCCTRL(dialog, "UserControlsPanel"))
-                notebook.DeletePage(index)
+            index = self.__getPanelIndex(notebook,
+                   wx.xrc.XRCCTRL(self.dialog, "UserControlsPanel"))
+            notebook.DeletePage(index)
 
-        dialog.Bind(wx.EVT_BUTTON, self.OnOk, id=wx.xrc.XRCID("ID_OK"))
-        dialog.Bind(wx.EVT_BUTTON, self.OnCancel, id=wx.xrc.XRCID("ID_CANCEL"))
-        self.PostCreate(dialog)
+        self.dialog.Bind(wx.EVT_BUTTON, self.OnOk, id=wx.xrc.XRCID("ID_OK"))
+        self.dialog.Bind(wx.EVT_BUTTON, self.OnCancel, id=wx.xrc.XRCID("ID_CANCEL"))
 
     def __getPanelIndex(self,notebook,panel):
         index = [notebook.GetPage(i).GetId() for i in
@@ -118,8 +116,8 @@ class PreferencesDialog(wx.Dialog):
         return values
 
     def ShowAndInterpret(self):
-        self.CentreOnParent()
-        if self.ShowModal() == wx.ID_OK:
+        self.dialog.CentreOnParent()
+        if self.dialog.ShowModal() == wx.ID_OK:
             result = self.getValues()
             self.preferences.values.update(result)
             self.preferences.save()
@@ -128,10 +126,10 @@ class PreferencesDialog(wx.Dialog):
             return False
 
     def OnCancel(self, event):
-        self.EndModal(wx.ID_CANCEL)
+        self.dialog.EndModal(wx.ID_CANCEL)
 
     def OnOk(self, event):
-        self.EndModal(wx.ID_OK)
+        self.dialog.EndModal(wx.ID_OK)
 
     
 

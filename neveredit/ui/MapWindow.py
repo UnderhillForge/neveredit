@@ -259,13 +259,19 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
 
     def _ensureMapLayersWindow(self):
         if self.mapLayersWindow is None:
-            self.mapLayersWindow = MapLayersWindow(self,
+            self.mapLayersWindow = MapLayersWindow(None,
                                                   self._onMapLayerVisibilityChanged,
                                                   self.layerVisibility,
                                                   self._onMapLayersGeometryChanged,
                                                   self._onMapLayersVisibilityChanged)
             if self.mapLayersWindowGeometry:
                 self.mapLayersWindow.applyWindowGeometry(self.mapLayersWindowGeometry)
+            else:
+                try:
+                    p = self.GetScreenPosition()
+                    self.mapLayersWindow.SetPosition(wx.Point(int(p.x + 24), int(p.y + 24)))
+                except Exception:
+                    pass
         return self.mapLayersWindow
 
     def _syncMapLayersWindowVisibility(self):
