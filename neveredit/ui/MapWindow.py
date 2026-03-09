@@ -197,6 +197,7 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
         self.Zmax = 0
         self.previewNightLighting = None
         self.ambientPreviewEnabled = False
+        self.ambientUse3DDistance = False
         self._ambientPreviewLastUpdate = 0.0
         self._ambientPreviewMixerReady = False
         self._ambientPreviewActiveVoices = {}
@@ -604,6 +605,12 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
                 model = self._cycleAttenuationModel(target)
                 self.setStatus('Attenuation model: %s' % self._attenuationModelName(model))
                 self.requestRedraw()
+            return
+
+        if key_char == 'z':
+            self.ambientUse3DDistance = not self.ambientUse3DDistance
+            self.setStatus('Ambient distance mode: %s' % ('3D' if self.ambientUse3DDistance else '2D'))
+            self.requestRedraw()
             return
 
         if evt.GetKeyCode() == 308: #ctrl
@@ -1328,7 +1335,8 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
             'K: preview %s  L: lighting %s  E: cycle SSF event'
             % ('on' if self.ambientPreviewEnabled else 'off',
                'night' if self.previewNightLighting else 'day'),
-            'M: attenuation model (%s)' % model_text
+            'M: attenuation model (%s)  Z: distance %s'
+            % (model_text, '3D' if self.ambientUse3DDistance else '2D')
         ]
 
         y = self.height - 18
@@ -1483,12 +1491,7 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
     def _estimateSoundGainAtListener(self, sound, outer_radius, inner_radius):
         if sound is None:
             return 0.0
-        lx, ly, _ = self._getListenerPosition()
-        sx = float(sound.getX())
-        sy = float(sound.getY())
-        dx = sx - lx
-        dy = sy - ly
-        distance = math.sqrt(dx * dx + dy * dy)
+        distance = self._getSoundDistanceToListener(sound)
         if distance >= outer_radius:
             return 0.0
         if distance <= inner_radius:
@@ -1537,8 +1540,30 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
                 x = getattr(p, 'x', None)
                 y = getattr(p, 'y', None)
                 if x is not None and y is not None:
-                    return (float(x), float(y), 0.0)
+                    z = getattr(p, 'z', 0.0)
+                    try:
+                        z = float(z)
+                    except Exception:
+                        z = 0.0
+                    return (float(x), float(y), z)
         return (float(self.lookingAtX), float(self.lookingAtY), 0.0)
+
+    def _getSoundDistanceToListener(self, sound):
+        lx, ly, lz = self._getListenerPosition()
+        sx = float(sound.getX())
+        sy = float(sound.getY())
+        sz = 0.0
+        if hasattr(sound, 'getZ'):
+            try:
+                sz = float(sound.getZ())
+            except Exception:
+                sz = 0.0
+        dx = sx - lx
+        dy = sy - ly
+        if self.ambientUse3DDistance:
+            dz = sz - lz
+            return math.sqrt(dx * dx + dy * dy + dz * dz)
+        return math.sqrt(dx * dx + dy * dy)
 
     def _normalizeResRef(self, value):
         if value is None:
@@ -1728,19 +1753,14 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
             return
         self._ambientPreviewLastUpdate = now
 
-        lx, ly, _ = self._getListenerPosition()
         candidates = []
 
         for sound in self.sounds:
             try:
-                sx = float(sound.getX())
-                sy = float(sound.getY())
                 radius = max(0.25, float(sound.getRadius()))
             except Exception:
                 continue
-            dx = sx - lx
-            dy = sy - ly
-            distance = math.sqrt(dx*dx + dy*dy)
+            distance = self._getSoundDistanceToListener(sound)
             if distance > radius:
                 continue
 
