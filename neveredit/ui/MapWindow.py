@@ -1285,6 +1285,7 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
                 if self.highlight != None:
                     b = self.highlightBox
                     self.drawTextBox(b)
+                self._drawAmbientLegendOverlay()
             finally:
                 glPopMatrix()
                 glMatrixMode(GL_PROJECTION)
@@ -1295,6 +1296,28 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
         glEnable(GL_LIGHTING)
         glEnable(GL_TEXTURE_2D)
         glEnable(GL_DEPTH_TEST)
+
+    def _drawAmbientLegendOverlay(self):
+        highlighted = self.getThingHit(self.highlight) if self.highlight is not None else None
+        selected = self.getThingHit(self.selected[0]) if self.selected else None
+        show = (self.mode == ToolPalette.AMBIENT_SOUND_TOOL or
+                (highlighted is not None and hasattr(highlighted, 'getRadius')) or
+                (selected is not None and hasattr(selected, 'getRadius')))
+        if not show:
+            return
+
+        lines = [
+            'Ambient Tool: edge-drag resize | wheel adjust new radius',
+            'K: preview %s  L: lighting %s  E: cycle SSF event'
+            % ('on' if self.ambientPreviewEnabled else 'off',
+               'night' if self.previewNightLighting else 'day')
+        ]
+
+        y = self.height - 18
+        glColor3f(1.0, 0.95, 0.7)
+        for line in lines:
+            self.output_text(14, y, line)
+            y -= 14
 
     def drawThing(self,thing,name):
         model = thing.getModel()
