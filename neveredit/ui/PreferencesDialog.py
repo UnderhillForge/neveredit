@@ -1,6 +1,7 @@
 """The neveredit preferences dialog."""
 
 import wx,wx.xrc
+import os
 from wx.lib.filebrowsebutton import DirBrowseButton
 
 from neveredit.resources.xrc import PreferencesDialog_xrc
@@ -22,9 +23,13 @@ class PreferencesDialog:
             # tablist list all tabs that will be activated, the other ones do
             # not show
         self.tablist = tablist
-        resourceText = PreferencesDialog_xrc.data
         resource = wx.xrc.XmlResource()
-        resource.LoadFromBuffer(resourceText.encode('utf-8'))
+        xrc_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'resources', 'xrc', 'PreferencesDialog.xrc'))
+        if os.path.exists(xrc_path):
+            resource.Load(xrc_path)
+        else:
+            resourceText = PreferencesDialog_xrc.data
+            resource.LoadFromBuffer(resourceText.encode('utf-8'))
 
         self.dialog = resource.LoadDialog(parent,"PrefDialog")
         notebook = wx.xrc.XRCCTRL(self.dialog,"PrefNotebook")
