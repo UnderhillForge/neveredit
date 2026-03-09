@@ -13,6 +13,8 @@ import io
 import copy
 import threading
 import math
+import os
+import json
 Set = set
 import time
 import profile
@@ -225,6 +227,7 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
         self._missingModelWarnings = set()
         
     def Destroy(self):
+        self._save2DDraftForCurrentArea()
         self._stopAmbientPreview()
         neverglobals.getResourceManager().removeVisualChangeListener(self)
         GLWindow.Destroy(self)
@@ -624,6 +627,7 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
                 return
             if key_char == 'c':
                 self.map2DCells = {}
+                self._save2DDraftForCurrentArea()
                 self.setStatus('2D overlay cleared')
                 self.requestRedraw()
                 return
@@ -1236,6 +1240,7 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
     def setArea(self,area):
         if self.area == area:
             return
+        self._save2DDraftForCurrentArea()
         self.map2DCells = {}
         self.beingPainted = None
         self.area = None
@@ -1281,6 +1286,7 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
             self._stopAmbientPreview()
         else:
             self.previewNightLighting = bool(self._isNightInAreaData())
+            self._load2DDraftForArea(area)
         self.lock.release()
         self.requestRedraw()
 
@@ -1492,12 +1498,130 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
             else:
                 cell['terrain'] = self.map2DTerrainBrush
                 cell['asset'] = self.map2DAssetBrush
+        self._save2DDraftForCurrentArea()
 
     def _cycle2DAssetAt(self, x, y):
         key = self._get2DCellKey(x, y)
         cell = self._ensure2DCell(key)
         cell['asset'] = (int(cell.get('asset', 0)) + 1) % 5
         self.setStatus('2D asset @%d,%d: %s' % (key[0], key[1], self._get2DAssetName(cell['asset'])))
+        self._save2DDraftForCurrentArea()
+
+    def _get2DDraftPath(self):
+        repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+        return os.path.join(repo_root, '.neveredit_2d_drafts.json')
+
+    def _get2DDraftAreaKey(self, area=None):
+        target = area or self.area
+        if not target:
+            return ''
+        try:
+            area_name = str(getattr(target, 'name', '') or '')
+        except Exception:
+            area_name = ''
+        if not area_name:
+            try:
+                area_name = str(target.getName() or '')
+            except Exception:
+                area_name = 'unknown_area'
+        return area_name
+
+    def _load2DDraftStore(self):
+        path = self._get2DDraftPath()
+        if not os.path.exists(path):
+            return {}
+        try:
+            with open(path, 'r') as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            logger.debug('failed to load 2D draft store', exc_info=True)
+        return {}
+
+    def _save2DDraftStore(self, store):
+        path = self._get2DDraftPath()
+        try:
+            with open(path, 'w') as f:
+                json.dump(store, f, indent=2, sort_keys=True)
+            return True
+        except Exception:
+            logger.debug('failed to save 2D draft store', exc_info=True)
+            return False
+
+    def _serialize2DCells(self):
+        payload = {
+            'cell_size': float(self.map2DCellSize),
+            'cells': []
+        }
+        for key, cell in list(self.map2DCells.items()):
+            try:
+                cx = int(key[0])
+                cy = int(key[1])
+                payload['cells'].append({
+                    'x': cx,
+                    'y': cy,
+                    'terrain': int(cell.get('terrain', 0)),
+                    'height': float(cell.get('height', 0.0)),
+                    'asset': int(cell.get('asset', 0)),
+                    'blocked': bool(cell.get('blocked', False)),
+                })
+            except Exception:
+                continue
+        return payload
+
+    def _deserialize2DCells(self, payload):
+        cells = {}
+        if not isinstance(payload, dict):
+            return cells
+        entries = payload.get('cells', [])
+        if not isinstance(entries, list):
+            return cells
+        for item in entries:
+            if not isinstance(item, dict):
+                continue
+            try:
+                cx = int(item.get('x', 0))
+                cy = int(item.get('y', 0))
+            except Exception:
+                continue
+            cells[(cx, cy)] = {
+                'terrain': int(item.get('terrain', 0) or 0),
+                'height': float(item.get('height', 0.0) or 0.0),
+                'asset': int(item.get('asset', 0) or 0),
+                'blocked': bool(item.get('blocked', False)),
+            }
+        if 'cell_size' in payload:
+            try:
+                self.map2DCellSize = max(1.0, min(4.0, float(payload['cell_size'])))
+            except Exception:
+                pass
+        return cells
+
+    def _load2DDraftForArea(self, area):
+        key = self._get2DDraftAreaKey(area)
+        if not key:
+            self.map2DCells = {}
+            return
+        store = self._load2DDraftStore()
+        payload = store.get(key)
+        if payload is None:
+            self.map2DCells = {}
+            return
+        self.map2DCells = self._deserialize2DCells(payload)
+
+    def _save2DDraftForCurrentArea(self):
+        key = self._get2DDraftAreaKey(self.area)
+        if not key:
+            return
+        store = self._load2DDraftStore()
+        if not self.map2DCells:
+            if key in store:
+                del store[key]
+                self._save2DDraftStore(store)
+            return
+        store[key] = self._serialize2DCells()
+        self._save2DDraftStore(store)
 
     def _draw2DGridAndPaintOverlay(self):
         if not self.area:
