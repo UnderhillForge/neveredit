@@ -114,12 +114,13 @@ class SoundInstance(Sound, NeverInstance):
 
     def setRadius(self, radius):
         r = max(0.5, float(radius))
+        gff = self.getMainGFFStruct()
         for key in ('MaxDistance', 'Distance', 'Radius', 'RandomRange', 'RandomRangeX', 'RandomRangeY'):
-            if self.hasProperty(key):
+            if gff.hasEntry(key):
                 self[key] = r
-        if self.hasProperty('RandomRangeX'):
-            self['RandomRangeX'] = r
-        if self.hasProperty('RandomRangeY'):
-            self['RandomRangeY'] = r
-        # Fallback when schema is sparse.
-        self['MaxDistance'] = r
+
+        # Keep MaxDistance available for editor logic even on sparse schemas.
+        if gff.hasEntry('MaxDistance'):
+            self['MaxDistance'] = r
+        else:
+            gff.add('MaxDistance', r, 'FLOAT')
