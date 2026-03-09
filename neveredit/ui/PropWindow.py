@@ -177,6 +177,29 @@ class PropWindow(scrolled.ScrolledPanel, ResourceListChangeListener):
         name = str(prop.getName() or '').lower()
         return name == 'soundset'
 
+    def isAttenuationModelProp(self, typeSpec, prop):
+        if not typeSpec or typeSpec[0] != 'Integer':
+            return False
+        if len(typeSpec) < 2 or str(typeSpec[1]) != '0-1':
+            return False
+        name = str(prop.getName() or '').lower()
+        return name == 'attenuationmodel'
+
+    def makeAttenuationModelChoiceControl(self, prop, parent):
+        choices = ['Linear', 'Inverse']
+        control = wx.Choice(parent, -1, choices=choices)
+        try:
+            value = int(prop.getValue())
+        except Exception:
+            value = 0
+        if value < 0:
+            value = 0
+        if value > 1:
+            value = 1
+        control.SetSelection(value)
+        control.Bind(wx.EVT_CHOICE, self.controlUsed)
+        return control
+
     def _normalizeResRefValue(self, value):
         if value is None:
             return ''
@@ -305,7 +328,10 @@ class PropWindow(scrolled.ScrolledPanel, ResourceListChangeListener):
             elif pName == 'Boolean':
                 prop.setValue(int(control.GetValue()))
             elif pName == 'Integer':
-                prop.setValue(int(control.GetValue()))
+                if self.isAttenuationModelProp(typeSpec, prop):
+                    prop.setValue(int(control.GetSelection()))
+                else:
+                    prop.setValue(int(control.GetValue()))
             elif pName == 'BGRColour':
                 c = control.GetBackgroundColour()
                 prop.setValue((c.Blue() << 16) | (c.Green() << 8) | c.Red())
@@ -384,23 +410,26 @@ class PropWindow(scrolled.ScrolledPanel, ResourceListChangeListener):
             control.SetValue(prop.getValue())
             control.Bind(wx.EVT_CHECKBOX, self.controlUsed)
         elif type == 'Integer':
-            min = 0
-            max = 100
-            if len(typeSpec) > 1:
-                maxMin = typeSpec[1].split('-')
-                min = int(maxMin[0])
-                max = int(maxMin[1])
-            control = wx.SpinCtrl(parent,-1)
-            control.SetRange(min,max)
-            try:
-                control.SetValue(prop.getValue())
-            except OverflowError:
-                # I got that with some factions that have 0xFFFFFFFF as parents
-                # and as they shouldn't be edited anyway..
-                control.SetValue(-1)
-                control.Disable()
-            control.Bind(wx.EVT_SPINCTRL, self.controlUsed)
-            control.Bind(wx.EVT_TEXT, self.controlUsed)
+            if self.isAttenuationModelProp(typeSpec, prop):
+                control = self.makeAttenuationModelChoiceControl(prop, parent)
+            else:
+                min = 0
+                max = 100
+                if len(typeSpec) > 1:
+                    maxMin = typeSpec[1].split('-')
+                    min = int(maxMin[0])
+                    max = int(maxMin[1])
+                control = wx.SpinCtrl(parent,-1)
+                control.SetRange(min,max)
+                try:
+                    control.SetValue(prop.getValue())
+                except OverflowError:
+                    # I got that with some factions that have 0xFFFFFFFF as parents
+                    # and as they shouldn't be edited anyway..
+                    control.SetValue(-1)
+                    control.Disable()
+                control.Bind(wx.EVT_SPINCTRL, self.controlUsed)
+                control.Bind(wx.EVT_TEXT, self.controlUsed)
         elif type == "ResRef":
             control = self.makeResRefControl(typeSpec, prop, parent)
             self.updateSoundSetControlState(control, typeSpec, prop)
