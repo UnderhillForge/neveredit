@@ -229,6 +229,7 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
             'showPaths': True,
         }
         self.mapLayersWindowGeometry = None
+        self.mapLayersWindowVisible = True
         self._loadLayerVisibility()
         self.mapLayersWindow = None
 
@@ -238,11 +239,13 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
         self.toPreprocess = None
         self._missingSelectionWarnings = set()
         self._missingModelWarnings = set()
+        wx.CallAfter(self._syncMapLayersWindowVisibility)
         
     def Destroy(self):
         self._save2DDraftForCurrentArea()
         if self.mapLayersWindow is not None:
             self._onMapLayersGeometryChanged(self.mapLayersWindow.getWindowGeometry())
+            self.mapLayersWindowVisible = bool(self.mapLayersWindow.IsShown())
         self._saveLayerVisibility()
         if self.mapLayersWindow is not None:
             try:
@@ -259,10 +262,22 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
             self.mapLayersWindow = MapLayersWindow(self,
                                                   self._onMapLayerVisibilityChanged,
                                                   self.layerVisibility,
-                                                  self._onMapLayersGeometryChanged)
+                                                  self._onMapLayersGeometryChanged,
+                                                  self._onMapLayersVisibilityChanged)
             if self.mapLayersWindowGeometry:
                 self.mapLayersWindow.applyWindowGeometry(self.mapLayersWindowGeometry)
         return self.mapLayersWindow
+
+    def _syncMapLayersWindowVisibility(self):
+        win = self._ensureMapLayersWindow()
+        win.setLayers(self.layerVisibility)
+        if self.mapLayersWindowVisible:
+            if not win.IsShown():
+                win.Show(True)
+            win.Raise()
+        else:
+            if win.IsShown():
+                win.Hide()
 
     def _onMapLayerVisibilityChanged(self, layerState):
         for key, value in list(layerState.items()):
@@ -270,6 +285,10 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
                 self.layerVisibility[key] = bool(value)
         self._saveLayerVisibility()
         self.requestRedraw()
+
+    def _onMapLayersVisibilityChanged(self, isVisible):
+        self.mapLayersWindowVisible = bool(isVisible)
+        self._saveLayerVisibility()
 
     def _onMapLayersGeometryChanged(self, geometry):
         if not isinstance(geometry, dict):
@@ -308,6 +327,8 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
                     'w': int(geom.get('w', 250)),
                     'h': int(geom.get('h', 250)),
                 }
+            if 'mapLayersWindowVisible' in payload:
+                self.mapLayersWindowVisible = bool(payload.get('mapLayersWindowVisible'))
         except Exception:
             logger.debug('failed to load map layer visibility settings', exc_info=True)
 
@@ -318,6 +339,7 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
                 payload = {
                     'layers': self.layerVisibility,
                     'mapLayersWindow': self.mapLayersWindowGeometry,
+                    'mapLayersWindowVisible': self.mapLayersWindowVisible,
                 }
                 json.dump(payload, f, indent=2, sort_keys=True)
             return True
@@ -798,15 +820,13 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
             return
 
         if key_char == 'v':
-            win = self._ensureMapLayersWindow()
-            if win.IsShown():
-                win.Hide()
-                self.setStatus('Map Layers window: hidden')
-            else:
-                win.setLayers(self.layerVisibility)
-                win.Show(True)
-                win.Raise()
+            self.mapLayersWindowVisible = not self.mapLayersWindowVisible
+            self._syncMapLayersWindowVisibility()
+            if self.mapLayersWindowVisible:
                 self.setStatus('Map Layers window: shown')
+            else:
+                self.setStatus('Map Layers window: hidden')
+            self._saveLayerVisibility()
             return
 
         if evt.GetKeyCode() == 308: #ctrl

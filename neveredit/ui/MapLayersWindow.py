@@ -4,10 +4,11 @@ import wx
 class MapLayersWindow(wx.MiniFrame):
     """Small layer-visibility panel for map rendering toggles."""
 
-    def __init__(self, parent, onLayersChanged, initialLayers=None, onGeometryChanged=None):
+    def __init__(self, parent, onLayersChanged, initialLayers=None, onGeometryChanged=None, onVisibilityChanged=None):
         wx.MiniFrame.__init__(self, parent, -1, "Map Layers", wx.DefaultPosition, wx.Size(250, 250))
         self._onLayersChanged = onLayersChanged
         self._onGeometryChanged = onGeometryChanged
+        self._onVisibilityChanged = onVisibilityChanged
         self._checkboxes = {}
 
         panel = wx.Panel(self, -1)
@@ -36,6 +37,7 @@ class MapLayersWindow(wx.MiniFrame):
         self.SetMinSize(wx.Size(220, 220))
         self.Bind(wx.EVT_MOVE, self._onWindowGeometryEvent)
         self.Bind(wx.EVT_SIZE, self._onWindowGeometryEvent)
+        self.Bind(wx.EVT_CLOSE, self._onClose)
 
     def _emitChange(self, _evt=None):
         if not self._onLayersChanged:
@@ -53,6 +55,20 @@ class MapLayersWindow(wx.MiniFrame):
         if not self._onGeometryChanged:
             return
         self._onGeometryChanged(self.getWindowGeometry())
+
+    def _emitVisibilityChange(self, visible):
+        if not self._onVisibilityChanged:
+            return
+        self._onVisibilityChanged(bool(visible))
+
+    def _onClose(self, evt):
+        # Keep the panel reusable; hide instead of destroying on close button.
+        if evt.CanVeto():
+            self.Hide()
+            self._emitVisibilityChange(False)
+            evt.Veto()
+        else:
+            evt.Skip()
 
     def getWindowGeometry(self):
         pos = self.GetPosition()
