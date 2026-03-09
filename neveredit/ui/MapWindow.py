@@ -1477,7 +1477,10 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
     def _cycleAttenuationModel(self, sound):
         current = self._getAttenuationModel(sound)
         nxt = 0 if current == 1 else 1
-        sound['AttenuationModel'] = nxt
+        if hasattr(sound, 'setAttenuationModel'):
+            sound.setAttenuationModel(nxt)
+        else:
+            sound['AttenuationModel'] = nxt
         return nxt
 
     def _getSoundInnerRadius(self, sound, outer_radius):
@@ -1650,7 +1653,10 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
         next_event = current + 1
         if next_event > count:
             next_event = 1
-        sound['SoundSetEvent'] = next_event
+        if hasattr(sound, 'setSoundSetEvent'):
+            sound.setSoundSetEvent(next_event)
+        else:
+            sound['SoundSetEvent'] = next_event
         self.setStatus('SoundSetEvent: %d/%d' % (next_event, count))
         return True
 

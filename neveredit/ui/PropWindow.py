@@ -185,6 +185,21 @@ class PropWindow(scrolled.ScrolledPanel, ResourceListChangeListener):
         name = str(prop.getName() or '').lower()
         return name == 'attenuationmodel'
 
+    def isSoundSetEventProp(self, typeSpec, prop):
+        if not typeSpec or typeSpec[0] != 'Integer':
+            return False
+        name = str(prop.getName() or '').lower()
+        return name == 'soundsetevent'
+
+    def ensureIntegerEntry(self, prop, value):
+        if not self.item or not hasattr(self.item, 'getMainGFFStruct'):
+            return int(value)
+        gff = self.item.getMainGFFStruct()
+        key = prop.getName()
+        if not gff.hasEntry(key):
+            gff.add(key, int(value), 'INT')
+        return int(value)
+
     def makeAttenuationModelChoiceControl(self, prop, parent):
         choices = ['Linear', 'Inverse']
         control = wx.Choice(parent, -1, choices=choices)
@@ -329,7 +344,11 @@ class PropWindow(scrolled.ScrolledPanel, ResourceListChangeListener):
                 prop.setValue(int(control.GetValue()))
             elif pName == 'Integer':
                 if self.isAttenuationModelProp(typeSpec, prop):
-                    prop.setValue(int(control.GetSelection()))
+                    value = self.ensureIntegerEntry(prop, int(control.GetSelection()))
+                    prop.setValue(value)
+                elif self.isSoundSetEventProp(typeSpec, prop):
+                    value = self.ensureIntegerEntry(prop, int(control.GetValue()))
+                    prop.setValue(value)
                 else:
                     prop.setValue(int(control.GetValue()))
             elif pName == 'BGRColour':

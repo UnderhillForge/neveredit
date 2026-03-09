@@ -124,3 +124,43 @@ class SoundInstance(Sound, NeverInstance):
             self['MaxDistance'] = r
         else:
             gff.add('MaxDistance', r, 'FLOAT')
+
+    def _getIntField(self, key, default):
+        try:
+            value = self[key]
+            if value is None:
+                return int(default)
+            return int(value)
+        except Exception:
+            return int(default)
+
+    def _setIntField(self, key, value):
+        gff = self.getMainGFFStruct()
+        ivalue = int(value)
+        if gff.hasEntry(key):
+            self[key] = ivalue
+        else:
+            gff.add(key, ivalue, 'INT')
+
+    def getSoundSetEvent(self):
+        return self._getIntField('SoundSetEvent', 1)
+
+    def setSoundSetEvent(self, value):
+        v = max(1, min(256, int(value)))
+        self._setIntField('SoundSetEvent', v)
+
+    def getAttenuationModel(self):
+        v = self._getIntField('AttenuationModel', 0)
+        if v < 0:
+            return 0
+        if v > 1:
+            return 1
+        return v
+
+    def setAttenuationModel(self, value):
+        v = int(value)
+        if v < 0:
+            v = 0
+        if v > 1:
+            v = 1
+        self._setIntField('AttenuationModel', v)
