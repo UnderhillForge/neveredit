@@ -32,6 +32,9 @@ from neveredit.game.Placeable import Placeable
 from neveredit.game.Script import Script
 from neveredit.game.Conversation import Conversation
 from neveredit.game.Factions import Factions,FactionStruct
+from neveredit.game.Sound import SoundBP
+from neveredit.game.Trigger import TriggerBP
+from neveredit.game.Encounter import EncounterBP
 from neveredit.ui import MapWindow
 from neveredit.ui import ConversationWindow
 from neveredit.ui import ModelWindow
@@ -41,6 +44,7 @@ from neveredit.ui import HelpViewer
 from neveredit.ui import ToolPalette
 from neveredit.ui import PreferencesDialog
 from neveredit.ui import Notebook
+from neveredit.ui import PropertiesDialogs
 from neveredit.ui import SoundControl
 from neveredit.ui.FactionGridWindow import FactionGridWindow,FactionGrid
 from neveredit.util import Preferences
@@ -183,6 +187,7 @@ class NeverEditMainWindow(wx.Frame,PropertyChangeListener):
         self.tree.Bind(wx.EVT_TREE_SEL_CHANGED, self.treeSelChanged)
         self.tree.Bind(wx.EVT_TREE_ITEM_EXPANDING, self.treeItemExpanding)
         self.tree.Bind(wx.EVT_TREE_ITEM_COLLAPSED, self.treeItemCollapsed)
+        self.tree.Bind(wx.EVT_TREE_ITEM_RIGHT_CLICK, self.OnTreeItemRightClick)
 
         self.notebook = Notebook.Notebook(splitter)
         self.Bind(wx.EVT_NOTEBOOK_PAGE_CHANGED,self.OnNotebookPageChanged,
@@ -326,11 +331,22 @@ class NeverEditMainWindow(wx.Frame,PropertyChangeListener):
         self.ID_COPY = wx.NewId()
         self.ID_PASTE = wx.NewId()
         self.ID_DEL = wx.NewId()
+        self.ID_BUILD_MODULE = wx.NewId()
+        self.ID_TEST_MODULE = wx.NewId()
+        self.ID_MODULE_PROPS = wx.NewId()
+        self.ID_AREA_PROPS = wx.NewId()
+        self.ID_TREE_AREA_PROPS = wx.NewId()
+        self.ID_AREA_WIZARD = wx.NewId()
 
         if Utils.iAmOnMac():
-            wx.App_SetMacExitMenuItemId(self.ID_EXIT)
-            wx.App_SetMacPreferencesMenuItemId(self.ID_PREFS)
-            wx.App_SetMacAboutMenuItemId(self.ID_ABOUT)
+            if hasattr(wx, 'App_SetMacExitMenuItemId'):
+                wx.App_SetMacExitMenuItemId(self.ID_EXIT)
+                wx.App_SetMacPreferencesMenuItemId(self.ID_PREFS)
+                wx.App_SetMacAboutMenuItemId(self.ID_ABOUT)
+            else:
+                wx.App.SetMacExitMenuItemId(self.ID_EXIT)
+                wx.App.SetMacPreferencesMenuItemId(self.ID_PREFS)
+                wx.App.SetMacAboutMenuItemId(self.ID_ABOUT)
 
         #menus
         self.filemenu = wx.Menu()
@@ -346,6 +362,15 @@ class NeverEditMainWindow(wx.Frame,PropertyChangeListener):
         self.filemenu.Append(self.ID_SAVEAS, '&' + _('Save As...') +
                              '\tShift+Ctrl+S',
                              _("Save File under a new name"))
+        self.filemenu.AppendSeparator()
+        self.filemenu.Append(self.ID_AREA_WIZARD,
+                             _('Area Wizard...'),
+                             _('Create a new blank area in this module'))
+        self.filemenu.Enable(self.ID_AREA_WIZARD, False)
+        self.filemenu.Append(self.ID_MODULE_PROPS,
+                             _('Module Properties...'),
+                             _('Edit module name, description, HAKs and event scripts'))
+        self.filemenu.Enable(self.ID_MODULE_PROPS, False)
         if not Utils.iAmOnMac():
             self.filemenu.Append(self.ID_EXIT,_('E&xit') + '\tAlt-X',
                                  _("Quit neveredit"))
@@ -366,20 +391,28 @@ class NeverEditMainWindow(wx.Frame,PropertyChangeListener):
         self.sep1=self.editmenu.AppendSeparator()
         self.editmenu.Append(self.ID_DEL, '&'+_('Delete'), _('del'))
         self.sep2=self.editmenu.AppendSeparator()
+        self.editmenu.Append(self.ID_AREA_PROPS,
+                             _('Area Properties...'),
+                             _('Edit lighting, sound and scripts for the current area'))
+        self.editmenu.Enable(self.ID_AREA_PROPS, False)
         self.editmenu.Append(self.ID_PREFS,'&' + _('Preferences...'),
                              _('neveredit preferences dialog'))
-        
         self.Bind(wx.EVT_MENU, self.OnDelete, id=self.ID_DEL)
         self.Bind(wx.EVT_MENU, self.OnCut, id=self.ID_CUT)
         self.Bind(wx.EVT_MENU, self.OnCopy, id=self.ID_COPY)
         self.Bind(wx.EVT_MENU, self.OnPaste, id=self.ID_PASTE)
         self.editmenu.Bind(wx.EVT_MENU_OPEN, self.OnEditMenu)
-
         self.windowmenu = wx.Menu()
         self.windowmenu.Append(self.ID_MAIN_WINDOW_MITEM, _('Main Window'))
         self.windowmenu.Append(self.ID_MAP_LAYER_WINDOW_MITEM, _('Map Layer'))
         self.windowmenu.Append(self.ID_PALETTE_WINDOW_MITEM, _('Palette Window'))
         self.windowmenu.Append(self.ID_SCRIPT_WINDOW_MITEM, _('Script Editor'))
+
+        self.toolsmenu = wx.Menu()
+        self.toolsmenu.Append(self.ID_BUILD_MODULE, _('Build Module'),
+                      _('Compile and validate module resources (placeholder)'))
+        self.toolsmenu.Append(self.ID_TEST_MODULE, _('Test Module\tF9'),
+                      _('Launch module test workflow (placeholder)'))
         
         helpmenu = wx.Menu()
         helpmenu.Append(self.ID_ABOUT, '&' + _('About...'), _("About neveredit"))
@@ -389,6 +422,7 @@ class NeverEditMainWindow(wx.Frame,PropertyChangeListener):
         menuBar.Append(self.filemenu,"&" + _("File"))
         menuBar.Append(self.editmenu, "&" + _("Edit"))
         menuBar.Append(self.windowmenu, "&" + _("Window"))
+        menuBar.Append(self.toolsmenu, "&" + _("Tools"))
         menuBar.Append(helpmenu, "&" + _("Help"))
         self.SetMenuBar(menuBar)
 
@@ -401,6 +435,11 @@ class NeverEditMainWindow(wx.Frame,PropertyChangeListener):
         self.Bind(wx.EVT_MENU, self.OnPreferences, id=self.ID_PREFS)
         self.Bind(wx.EVT_MENU, self.exit, id=self.ID_EXIT)
         self.Bind(wx.EVT_MENU, self.help, id=self.ID_HELP)
+        self.Bind(wx.EVT_MENU, self.OnBuildModule, id=self.ID_BUILD_MODULE)
+        self.Bind(wx.EVT_MENU, self.OnTestModule, id=self.ID_TEST_MODULE)
+        self.Bind(wx.EVT_MENU, self.OnAreaWizard, id=self.ID_AREA_WIZARD)
+        self.Bind(wx.EVT_MENU, self.OnModuleProperties, id=self.ID_MODULE_PROPS)
+        self.Bind(wx.EVT_MENU, self.OnAreaProperties, id=self.ID_AREA_PROPS)
         self.Bind(wx.EVT_MENU, self.windowMenu, id=self.ID_MAIN_WINDOW_MITEM)
         self.Bind(wx.EVT_MENU, self.windowMenu, id=self.ID_MAP_LAYER_WINDOW_MITEM)
         self.Bind(wx.EVT_MENU, self.windowMenu, id=self.ID_SCRIPT_WINDOW_MITEM)
@@ -539,7 +578,7 @@ class NeverEditMainWindow(wx.Frame,PropertyChangeListener):
         '''This gets called when we finish loading a new ERF file.
         It gets the interface into its final state and cleans up a bit.'''
         self.setStatus("Preparing user interface...")
-        areaRoot = self.tree.AppendItem(self.treeRoot,'Areas')
+        self.areaRoot = self.tree.AppendItem(self.treeRoot,'Areas')
         area_values = list(self.areas.values())
         area_total = len(area_values)
         area_start = time.time()
@@ -553,7 +592,7 @@ class NeverEditMainWindow(wx.Frame,PropertyChangeListener):
                 self.setStatus("Building area tree %d/%d (ETA %s)" %
                                (idx - 1, area_total, eta))
                 self.setProgress((float(idx - 1) / float(area_total)) * 100.0)
-            self.makeAreaItem(areaRoot,area)
+            self.makeAreaItem(self.areaRoot,area)
             wx.YieldIfNeeded()
         self.setProgress(0)
         self.scriptRoot = self.tree.AppendItem(self.treeRoot,_('Scripts'))
@@ -562,11 +601,19 @@ class NeverEditMainWindow(wx.Frame,PropertyChangeListener):
         self.addConversations()
         self.factionRoot = self.tree.AppendItem(self.treeRoot,_('Factions'))
         self.addFactions()
+        self.soundBPRoot = self.tree.AppendItem(self.treeRoot, _('Sounds'))
+        self.addSoundBlueprints()
+        self.triggerBPRoot = self.tree.AppendItem(self.treeRoot, _('Triggers'))
+        self.addTriggerBlueprints()
+        self.encounterBPRoot = self.tree.AppendItem(self.treeRoot, _('Encounters'))
+        self.addEncounterBlueprints()
         self.notebook.Refresh()
         self.SetStatusText(_("Read ") + self.fname)
         self.filemenu.Enable(self.ID_SAVEAS,True)
         self.filemenu.Enable(self.ID_ADD_ERF,True)
         self.filemenu.Enable(self.ID_ADD_RESOURCE,True)
+        self.filemenu.Enable(self.ID_AREA_WIZARD, True)
+        self.filemenu.Enable(self.ID_MODULE_PROPS, True)
         self.fileChanged = False
         self.tree.Expand(self.treeRoot)
         self.tree.UnselectAll()
@@ -618,6 +665,48 @@ class NeverEditMainWindow(wx.Frame,PropertyChangeListener):
         for f in factionNames:
             factionItem = self.tree.AppendItem(self.factionRoot,f)
             self.tree.SetItemData(factionItem,factions[f])
+
+    def addSoundBlueprints(self):
+        '''Add module-level sound blueprints (.UTS) to the tree.'''
+        self.tree.DeleteChildren(self.soundBPRoot)
+        bps = self.module.getSoundBlueprints()
+        for name in sorted(bps.keys()):
+            try:
+                bp = SoundBP(bps[name].getRoot())
+            except Exception:
+                bp = None
+            if bp is None:
+                continue
+            item = self.tree.AppendItem(self.soundBPRoot, bp.getName() or name)
+            self.tree.SetItemData(item, bp)
+
+    def addTriggerBlueprints(self):
+        '''Add module-level trigger blueprints (.UTT) to the tree.'''
+        self.tree.DeleteChildren(self.triggerBPRoot)
+        bps = self.module.getTriggerBlueprints()
+        for name in sorted(bps.keys()):
+            try:
+                bp = TriggerBP(bps[name].getRoot())
+            except Exception:
+                bp = None
+            if bp is None:
+                continue
+            item = self.tree.AppendItem(self.triggerBPRoot, bp.getName() or name)
+            self.tree.SetItemData(item, bp)
+
+    def addEncounterBlueprints(self):
+        '''Add module-level encounter blueprints (.UTE) to the tree.'''
+        self.tree.DeleteChildren(self.encounterBPRoot)
+        bps = self.module.getEncounterBlueprints()
+        for name in sorted(bps.keys()):
+            try:
+                bp = EncounterBP(bps[name].getRoot())
+            except Exception:
+                bp = None
+            if bp is None:
+                continue
+            item = self.tree.AppendItem(self.encounterBPRoot, bp.getName() or name)
+            self.tree.SetItemData(item, bp)
 
     def init(self):
         '''Schedule the the app init routine.'''
@@ -705,7 +794,11 @@ class NeverEditMainWindow(wx.Frame,PropertyChangeListener):
         self.unselectTreeItem()
         self.tree.DeleteChildren(self.lastAreaItem)
         self.subtreeFromArea(self.lastAreaItem,self.map.getArea())
-        self.selectThisItem = event.getSelectedId()
+        selected_id = event.getSelectedId()
+        if selected_id is not None:
+            self.selectThisItem = selected_id
+        else:
+            self.selectThisItem = None
         # removing this line prevents a crash - good as a *temporary*
         # fix, but the crash should be investigated
         # this also cause functionality loss (auto-selection of the thing added
@@ -722,6 +815,12 @@ class NeverEditMainWindow(wx.Frame,PropertyChangeListener):
         areaItem = self.tree.AppendItem(item,area.getName())
         self.tree.SetItemHasChildren(areaItem,True)
         self.tree.SetItemData(areaItem,area)
+
+    def addUnsupportedAreaCategory(self, areaItem, label):
+        categoryItem = self.tree.AppendItem(areaItem, label)
+        noteItem = self.tree.AppendItem(categoryItem, _('(Not yet supported)'))
+        self.tree.SetItemTextColour(noteItem, wx.Colour(128, 128, 128))
+        self.tree.Expand(categoryItem)
         
     def subtreeFromArea(self,areaItem,area):
         '''Create a new subtree for a module area.'''
@@ -771,6 +870,33 @@ class NeverEditMainWindow(wx.Frame,PropertyChangeListener):
                                                 waypoint.getName())
                 self.tree.SetItemData(waypointItem,waypoint)
                 self.idToTreeItemMap[waypoint.getNevereditId()] = waypointItem
+
+        sounds = area.getSounds()
+        if len(sounds) > 0:
+            soundParentItem = self.tree.AppendItem(areaItem, _('Sounds'))
+            for sound in sounds:
+                soundItem = self.tree.AppendItem(soundParentItem,
+                                                 sound.getName())
+                self.tree.SetItemData(soundItem, sound)
+                self.idToTreeItemMap[sound.getNevereditId()] = soundItem
+
+        triggers = area.getTriggers()
+        if len(triggers) > 0:
+            triggerParentItem = self.tree.AppendItem(areaItem, _('Triggers'))
+            for trigger in triggers:
+                triggerItem = self.tree.AppendItem(triggerParentItem,
+                                                   trigger.getName())
+                self.tree.SetItemData(triggerItem, trigger)
+                self.idToTreeItemMap[trigger.getNevereditId()] = triggerItem
+
+        encounters = area.getEncounters()
+        if len(encounters) > 0:
+            encounterParentItem = self.tree.AppendItem(areaItem, _('Encounters'))
+            for encounter in encounters:
+                encounterItem = self.tree.AppendItem(encounterParentItem,
+                                                     encounter.getName())
+                self.tree.SetItemData(encounterItem, encounter)
+                self.idToTreeItemMap[encounter.getNevereditId()] = encounterItem
 
     def isAreaItem(self,item):
         data = self.tree.GetItemData(item)
@@ -892,6 +1018,7 @@ class NeverEditMainWindow(wx.Frame,PropertyChangeListener):
         elif not hasattr(data,'iterateProperties'):
             self.notebook.deletePageByTag('props')
         area = self.getAreaForTreeItem(self.selectedTreeItem)
+        self.editmenu.Enable(self.ID_AREA_PROPS, bool(area))
         oldArea = self.getAreaForTreeItem(lastItem)
         if oldArea and area != oldArea:
             oldArea.discardTiles()
@@ -1107,6 +1234,96 @@ Copyright 2003-2006'''),
     def help(self,event):
         self.helpviewer.DisplayContents()
 
+    def OnBuildModule(self, event):
+        self.SetStatusText(_('Build Module is not implemented yet (placeholder).'))
+        wx.MessageBox(_('Build Module is currently a placeholder.\n'
+                        'Compile/validation wiring will be added in a later phase.'),
+                      _('Build Module'), wx.OK | wx.ICON_INFORMATION, self)
+
+    def OnTestModule(self, event):
+        self.SetStatusText(_('Test Module is not implemented yet (placeholder).'))
+        wx.MessageBox(_('Test Module is currently a placeholder.\n'
+                        'In-game launch/integration will be added in a later phase.'),
+                      _('Test Module'), wx.OK | wx.ICON_INFORMATION, self)
+
+    def OnModuleProperties(self, event):
+        """Show the Module Properties dialog."""
+        module = getattr(self, 'module', None)
+        if not module:
+            return
+        if PropertiesDialogs.show_module_properties(self, module):
+            self.setFileChanged(True)
+
+    def OnAreaWizard(self, event):
+        """Show the New Area wizard and add the area to the module on OK."""
+        from neveredit.ui import AreaWizard as _AreaWizardModule
+        from neveredit.game.ResourceManager import ResourceManager as _RM
+        module = getattr(self, 'module', None)
+        if not module:
+            return
+        results = _AreaWizardModule.show_area_wizard(self)
+        if not results:
+            return
+        existing = {_RM.normalizeResRef(n) for n in module.getAreaNames()}
+        if results['resref'] in existing:
+            wx.MessageBox(
+                'An area with ResRef "%s" already exists in this module.'
+                % results['resref'],
+                'Duplicate ResRef', wx.OK | wx.ICON_WARNING, self)
+            return
+        try:
+            area = module.createNewArea(
+                name=results['name'],
+                resref=results['resref'],
+                tileset=results['tileset'],
+                width=results['width'],
+                height=results['height'],
+            )
+        except Exception as exc:
+            wx.MessageBox('Failed to create area: %s' % str(exc),
+                          'Error', wx.OK | wx.ICON_ERROR, self)
+            return
+        if hasattr(self, 'areaRoot') and self.areaRoot.IsOk():
+            self.makeAreaItem(self.areaRoot, area)
+            self.tree.Expand(self.areaRoot)
+        self.setFileChanged(True)
+        self.SetStatusText('Created area "%s" (%s)' %
+                           (results['name'], results['resref']))
+
+
+    def OnAreaProperties(self, event):
+        """Show the Area Properties dialog for the currently selected area."""
+        area = self.getAreaForTreeItem(self.selectedTreeItem) if self.selectedTreeItem else None
+        if not area:
+            return
+        if PropertiesDialogs.show_area_properties(self, area):
+            self.setFileChanged(True)
+    def OnTreeItemRightClick(self, event):
+        """Show a context menu when the user right-clicks a tree item."""
+        item = event.GetItem()
+        if not item or not item.IsOk():
+            return
+        area = self.getAreaForTreeItem(item)
+        if not self.isAreaItem(item) and not area:
+            return
+        menu = wx.Menu()
+        props_id = wx.NewId()
+        if self.isAreaItem(item):
+            area = self.tree.GetItemData(item)
+            label = _('Area Properties...')
+        else:
+            label = _('Area Properties...')
+        menu.Append(props_id, label)
+        if area:
+            def _on_props(evt, _area=area):
+                if PropertiesDialogs.show_area_properties(self, _area):
+                    self.setFileChanged(True)
+            self.Bind(wx.EVT_MENU, _on_props, id=props_id)
+        else:
+            menu.Enable(props_id, False)
+        self.tree.PopupMenu(menu)
+        menu.Destroy()
+
     def OnPreferences(self,event):
         '''Display a prefs dialog.'''
         oldAppDir = self.prefs['NWNAppDir']
@@ -1191,6 +1408,9 @@ Copyright 2003-2006'''),
             self.readFile(dlg.GetPath())
         dlg.Destroy()
 
+
+
+
     def addERFFile(self,event):
         '''Display a dialog to find a file and add its entries to
         the current one.'''
@@ -1236,15 +1456,12 @@ loaded and save any changes you have made so far. Proceed?'''),
                 dlg.Destroy()
             except ValueError:
                 dlg.Destroy()
-                dlg2 = wx.MessageDialog(self,_('"'
-                                               + dlg.GetPath()
+                dlg2 = wx.MessageDialog(self,_('"' + dlg.GetPath()
                                                + '" is not a valid nwn resource name'),
                                         _("Resource Name Error"),wx.OK|wx.ICON_ERROR)
                 dlg2.ShowModal()
                 dlg2.Destroy()
-                
-                
-        
+
     def saveFile(self,event):
         '''Save the file to the file name we loaded it from.'''
         self.maybeApplyPropControlValues()

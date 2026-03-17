@@ -170,8 +170,10 @@ class CreatureBP (Creature):
     def toInstance(self):
         gff = self.gffstructDict['blueprint'].clone()
 
-        del gff['Comment']
-        del gff['PaletteID']
+        if gff.hasEntry('Comment'):
+            del gff['Comment']
+        if gff.hasEntry('PaletteID'):
+            del gff['PaletteID']
         
         gff.add('XPosition',0.0,'FLOAT')
         gff.add('YPosition',0.0,'FLOAT')

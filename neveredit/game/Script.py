@@ -33,8 +33,23 @@ class Script(NeverData):
     nwscript_keywords = {}
 
     def init_nwscript_keywords(cls):
-        nwscript = str(neverglobals.getResourceManager()\
-                       .getResourceByName('nwscript.nss'))
+        cls.nwscript_keywords = {}
+        try:
+            rm = neverglobals.getResourceManager()
+        except Exception:
+            logger.warning('resource manager unavailable; nwscript keyword help disabled')
+            return
+
+        if not rm:
+            logger.warning('resource manager unavailable; nwscript keyword help disabled')
+            return
+
+        nwscript_res = rm.getResourceByName('nwscript.nss')
+        if nwscript_res is None:
+            logger.warning('nwscript.nss not found; keyword help disabled')
+            return
+
+        nwscript = str(nwscript_res)
         comment = []
         for line in nwscript.split('\r\n'):
             if not line.strip():

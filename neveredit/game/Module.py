@@ -116,6 +116,9 @@ class Module(Progressor,NeverData):
         self.scripts = None
         self.conversations = None
         self.areas = {}
+        self.soundBlueprints = None
+        self.triggerBlueprints = None
+        self.encounterBlueprints = None
 
         try:
             self.facObject = neveredit.game.Factions.Factions(self.erfFile)
@@ -253,6 +256,39 @@ class Module(Progressor,NeverData):
                 self.factions[f.getName()] = f
         return self.factions
 
+    def getSoundBlueprints(self):
+        """Get .UTS sound blueprints stored in this module ERF.
+        @return: dict of resref:GFFFile"""
+        if self.soundBlueprints is None:
+            entries = self.erfFile.getEntriesWithExtension('UTS')
+            self.soundBlueprints = {}
+            for s in entries:
+                self.soundBlueprints[self._entry_resref_name(s)] = \
+                    self.erfFile.getEntryContents(s)
+        return self.soundBlueprints
+
+    def getTriggerBlueprints(self):
+        """Get .UTT trigger blueprints stored in this module ERF.
+        @return: dict of resref:GFFFile"""
+        if self.triggerBlueprints is None:
+            entries = self.erfFile.getEntriesWithExtension('UTT')
+            self.triggerBlueprints = {}
+            for s in entries:
+                self.triggerBlueprints[self._entry_resref_name(s)] = \
+                    self.erfFile.getEntryContents(s)
+        return self.triggerBlueprints
+
+    def getEncounterBlueprints(self):
+        """Get .UTE encounter blueprints stored in this module ERF.
+        @return: dict of resref:GFFFile"""
+        if self.encounterBlueprints is None:
+            entries = self.erfFile.getEntriesWithExtension('UTE')
+            self.encounterBlueprints = {}
+            for s in entries:
+                self.encounterBlueprints[self._entry_resref_name(s)] = \
+                    self.erfFile.getEntryContents(s)
+        return self.encounterBlueprints
+
     def addScript(self,s):
         if not self.scripts:
             self.getScripts()
@@ -309,43 +345,136 @@ class Module(Progressor,NeverData):
         self.erfFile.addFile(fname)
         self.updateAreaList()
 
-    def updateAreaList(self):
-        ''' rebuild area list from the contents of the ERF file '''
-        # first get all the area names, and check if areas have all 3 parts: ARE, GIC and GIT
-        areKeys = neverglobals.getResourceManager().getKeysWithExtensions('ARE')
-        gitKeys = neverglobals.getResourceManager().getKeysWithExtensions('GIT')
-        gicKeys = neverglobals.getResourceManager().getKeysWithExtensions('GIC')
-        areaNames = []
-        gitNames = []
-        gicNames = []
-        for a in areKeys:
-            areaNames.append(a[0])
-        for a in gitKeys:
-            gitNames.append(a[0])
-        for a in gicKeys:
-            gicNames.append(a[0])
-        for a in areaNames:
-            try:
-                tmp1 = gitNames.index(a)
-                tmp2 = gicNames.index(a)
-            except ValueError:
-                logger.warning('''area file without a GIC or a GIT part : %s - not including
-                            it in Mod_AreaList''' % a)
-                areaNames.remove(a)
-        # sets the new Mod_Area_list
-        newAreaList = []
-        for a in areaNames:
-            s = GFFStruct()
-            s.add('Area_Name',a,'ResRef')
-            newAreaList.append(s)
-        self.setProperty("Mod_Area_list",newAreaList)
+    def createNewArea(self, name, resref, tileset, width, height):
+        """Create a new blank area and register it in this module."""
+        from neveredit.file.CExoLocString import CExoLocString as _CExoLocString
+
+        resref = resref.strip().lower()[:16]
+
+        # ── Read tileset-contextual defaults from .SET ──────────────────────
+        _day_night_cycle = 1
+        _music = 0
+        _ambient = 0
+        _ts = neverglobals.getResourceManager().getResourceByName(tileset + '.set')
+        if _ts is not None:
+            try: _day_night_cycle = 0 if int(_ts.get('GENERAL', 'interior', fallback='0')) else 1
+            except Exception: pass
+            try: _music = int(_ts.get('GENERAL', 'defaultmusic', fallback='0'))
+            except Exception: pass
+            try: _ambient = int(_ts.get('GENERAL', 'defaultenvmap', fallback='0'))
+            except Exception: pass
+
+        # ── ARE ──────────────────────────────────────────────────────────────
+        are_gff = GFFFile()
+        are_gff.type = 'ARE '
+        are_gff.version = 'V3.2'
+        r = GFFStruct()
+
+        loc_name = _CExoLocString(value=name, langID=0, gender=0)
+        r.add('Name', loc_name.toGFFEntry(), 'CExoLocString')
+        r.add('Tag', resref, 'CExoString')
+        r.add('Tileset', tileset, 'ResRef')
+        r.add('Width', width, 'INT')
+        r.add('Height', height, 'INT')
+        r.add('ChanceLightning', 0, 'BYTE')
+        r.add('ChanceRain', 0, 'BYTE')
+        r.add('ChanceSnow', 0, 'BYTE')
+        r.add('DayNightCycle', _day_night_cycle, 'BYTE')
+        r.add('IsNight', 0, 'BYTE')
+        r.add('ModListenCheck', 0, 'INT')
+        r.add('ModSpotCheck', 0, 'INT')
+        r.add('MoonAmbientColor', 0x404040, 'DWORD')
+        r.add('MoonDiffuseColor', 0x404040, 'DWORD')
+        r.add('MoonFogAmount', 0, 'BYTE')
+        r.add('MoonFogColor', 0x404040, 'DWORD')
+        r.add('MoonShadows', 1, 'BYTE')
+        r.add('NoRest', 0, 'BYTE')
+        r.add('OnEnter', '', 'ResRef')
+        r.add('OnExit', '', 'ResRef')
+        r.add('OnHeartbeat', '', 'ResRef')
+        r.add('OnUserDefined', '', 'ResRef')
+        r.add('PlayerVsPlayer', 0, 'BYTE')
+        r.add('ShadowOpacity', 100, 'BYTE')
+        r.add('SunAmbientColor', 0xA0A0A0, 'DWORD')
+        r.add('SunDiffuseColor', 0xFFFFFF, 'DWORD')
+        r.add('SunFogAmount', 0, 'BYTE')
+        r.add('SunFogColor', 0xC8C8C8, 'DWORD')
+        r.add('SunShadows', 1, 'BYTE')
+        r.add('WindPower', 0, 'BYTE')
+        r.add('LoadScreenID', 0, 'WORD')
+        r.add('ID', 0, 'DWORD')
+        r.add('Flags', 0, 'DWORD')
+        r.add('Comments', '', 'CExoString')
+        r.add('Version', 1, 'DWORD')
+        tiles = []
+        for _ in range(width * height):
+            t = GFFStruct(1)
+            t.add('Tile_AnimLoop1', 0, 'INT')
+            t.add('Tile_AnimLoop2', 0, 'INT')
+            t.add('Tile_AnimLoop3', 0, 'INT')
+            t.add('Tile_Height', 0, 'INT')
+            t.add('Tile_ID', 0, 'INT')
+            t.add('Tile_MainLight1', 0, 'BYTE')
+            t.add('Tile_MainLight2', 0, 'BYTE')
+            t.add('Tile_Orientation', 0, 'INT')
+            t.add('Tile_SrcLight1', 0, 'INT')
+            t.add('Tile_SrcLight2', 0, 'INT')
+            tiles.append(t)
+        r.add('Tile_List', tiles, 'List')
+        are_gff.rootStructure = r
+
+        # ── GIT ──────────────────────────────────────────────────────────────
+        git_gff = GFFFile()
+        git_gff.type = 'GIT '
+        git_gff.version = 'V3.2'
+        g = GFFStruct()
+        ap = GFFStruct()
+        ap.add('AmbientSndDay', _ambient, 'INT')
+        ap.add('AmbientSndDayVol', 127, 'BYTE')
+        ap.add('AmbientSndNight', _ambient, 'INT')
+        ap.add('AmbientSndNitVol', 127, 'BYTE')
+        ap.add('EnvAudio', 0, 'INT')
+        ap.add('MusicBattle', 0, 'INT')
+        ap.add('MusicDay', _music, 'INT')
+        ap.add('MusicDelay', 0, 'INT')
+        ap.add('MusicNight', _music, 'INT')
+        g.add('AreaProperties', ap, 'Struct')
+        g.add('Creature List', [], 'List')
+        g.add('Door List', [], 'List')
+        g.add('Encounter List', [], 'List')
+        g.add('List', [], 'List')
+        g.add('Placeable List', [], 'List')
+        g.add('SoundList', [], 'List')
+        g.add('Trigger List', [], 'List')
+        g.add('WaypointList', [], 'List')
+        git_gff.rootStructure = g
+
+        # ── GIC ──────────────────────────────────────────────────────────────
+        gic_gff = GFFFile()
+        gic_gff.type = 'GIC '
+        gic_gff.version = 'V3.2'
+        gic_gff.rootStructure = GFFStruct()
+
+        # ── Register in ERF ──────────────────────────────────────────────────
+        self.erfFile.addResourceByName(resref + '.ARE', are_gff)
+        self.erfFile.addResourceByName(resref + '.GIT', git_gff)
+        self.erfFile.addResourceByName(resref + '.GIC', gic_gff)
+
+        # ── Append to Mod_Area_list ───────────────────────────────────────────
+        area_list = self.gffstructDict['ifo'].getInterpretedEntry('Mod_Area_list')
+        if area_list is None:
+            area_list = []
+            self.gffstructDict['ifo'].add('Mod_Area_list', area_list, 'List')
+        area_entry = GFFStruct()
+        area_entry.add('Area_Name', resref, 'ResRef')
+        area_list.append(area_entry)
+
+        neverglobals.getResourceManager().moduleResourceListChanged()
         self.needSave = True
-        # check if Mod_Entry_Area is a present area
-        try:
-            list(map(lambda x: x.strip('\0'),areaNames).index(self['Mod_Entry_Area']))
-        except KeyError:
-            logger.warning('''Module starting point set in non-existant area : "%s" - please
-                    change Mod_Entry_Area value''' % self['Mod_Entry_Area'])
+
+        area = Area(self.erfFile, resref)
+        self.areas[resref] = area
+        return area
 
     def getKeyList(self):
         return self.erfFile.getKeyList()

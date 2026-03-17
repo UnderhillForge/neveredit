@@ -594,19 +594,37 @@ class ResourceManager(Progressor,VisualChangeNotifier,ResourceListChangeNotifier
                         self.ambientSoundFileNames.append(ambsound)
 
         if not self.mainDialogFile:
-            # NWN:EE often stores dialog.tlk under lang/<locale>/data.
-            tlk_search_paths = [
-                os.path.join(dirname, 'lang', 'en', 'data', 'dialog.tlk'),
-                os.path.join(dirname, 'data', 'tlk', 'dialog.tlk'),
-            ]
-            lang_dir = os.path.join(dirname, 'lang')
-            if os.path.isdir(lang_dir):
+            # NWN:EE can be configured either from the install root or directly from data/.
+            normalized_dir = os.path.normpath(dirname)
+            if os.path.basename(normalized_dir).lower() == 'data':
+                tlk_search_roots = [os.path.dirname(normalized_dir), normalized_dir]
+            else:
+                tlk_search_roots = [normalized_dir, self.getAppDir()]
+
+            deduped_roots = []
+            for root in tlk_search_roots:
+                if root not in deduped_roots:
+                    deduped_roots.append(root)
+
+            tlk_search_paths = []
+            for root in deduped_roots:
+                tlk_search_paths.extend([
+                    os.path.join(root, 'lang', 'en', 'data', 'dialog.tlk'),
+                    os.path.join(root, 'data', 'tlk', 'dialog.tlk'),
+                    os.path.join(root, 'data', 'tlk', 'dla_bio.tlk'),
+                    os.path.join(root, 'tlk', 'dialog.tlk'),
+                    os.path.join(root, 'tlk', 'dla_bio.tlk'),
+                ])
+
+            for root in deduped_roots:
+                lang_dir = os.path.join(root, 'lang')
+                if not os.path.isdir(lang_dir):
+                    continue
                 for locale in os.listdir(lang_dir):
                     tlk_search_paths.append(
                         os.path.join(lang_dir, locale, 'data', 'dialog.tlk')
                     )
-            # Last resort for installs missing dialog.tlk.
-            tlk_search_paths.append(os.path.join(dirname, 'data', 'tlk', 'dla_bio.tlk'))
+
             for tlk_path in tlk_search_paths:
                 if _try_load_main_tlk(tlk_path):
                     break

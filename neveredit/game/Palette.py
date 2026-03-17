@@ -1,3 +1,6 @@
+import logging
+logger = logging.getLogger('neveredit')
+
 from neveredit.util import neverglobals
 from neveredit.game.NeverData import NeverData
 from neveredit.game.Door import DoorBP
@@ -5,6 +8,10 @@ from neveredit.game.Placeable import PlaceableBP
 from neveredit.game.Creature import CreatureBP
 from neveredit.game.Item import ItemBP
 from neveredit.game.WayPoint import WayPointBP
+from neveredit.game.Trigger import TriggerBP
+from neveredit.game.Encounter import EncounterBP
+from neveredit.game.Sound import SoundBP
+from neveredit.game.Store import StoreBP
 
 class TreeNode:
     def __init__(self,nodeStruct,bptype):
@@ -84,19 +91,15 @@ class TreeNode:
         elif self.bptype == 'Item':
             self.blueprint = ItemBP(gffroot)
         elif self.bptype == 'Trigger':
-            raise NotImplementedError("no trigger blueprints yet")
-            #self.blueprint = TriggerBP(gffroot)
+            self.blueprint = TriggerBP(gffroot)
         elif self.bptype == 'Sound':
-            raise NotImplementedError("no sound blueprints yet")
-            #self.blueprint = SoundBP(gffroot)
+            self.blueprint = SoundBP(gffroot)
         elif self.bptype == 'Encounter':
-            raise NotImplementedError("no encounter blueprints yet")
-            #self.blueprint = EncounterBP(gffroot)
+            self.blueprint = EncounterBP(gffroot)
         elif self.bptype == 'Placeable':
             self.blueprint = PlaceableBP(gffroot)
         elif self.bptype == 'Store':
-            raise NotImplementedError("no store blueprints yet")
-            #self.blueprint = StoreBP(gffroot)
+            self.blueprint = StoreBP(gffroot)
         elif self.bptype == 'Waypoint':
             #raise NotImplementedError("no waypoint blueprints yet")
             self.blueprint = WayPointBP(gffroot)

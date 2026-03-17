@@ -164,3 +164,39 @@ class SoundInstance(Sound, NeverInstance):
         if v > 1:
             v = 1
         self._setIntField('AttenuationModel', v)
+
+
+class SoundBP(Sound):
+    """Blueprint loaded from a .UTS resource (sound palette entry)."""
+    soundBPPropList = {
+        'Comment': 'CExoString',
+        'PaletteID': 'Integer,0-255',
+        'TemplateResRef': 'ResRef,UTS',
+    }
+
+    def __init__(self, gffEntry):
+        Sound.__init__(self, gffEntry)
+        self.addPropList('blueprint', self.soundBPPropList, gffEntry)
+
+    def getPortrait(self, size):
+        return None
+
+    def getDescription(self):
+        name = self.getName() or 'Sound'
+        tag = self['Tag'] or ''
+        if tag:
+            return 'Name: ' + name + '\nTag: ' + str(tag)
+        return 'Name: ' + name
+
+    def toInstance(self):
+        gff = self.gffstructDict['blueprint'].clone()
+        for key in ('Comment', 'PaletteID'):
+            if gff.hasEntry(key):
+                del gff[key]
+        gff.add('XPosition', 0.0, 'FLOAT')
+        gff.add('YPosition', 0.0, 'FLOAT')
+        gff.add('ZPosition', 0.0, 'FLOAT')
+        gff.add('XOrientation', 0.0, 'FLOAT')
+        gff.add('YOrientation', 0.0, 'FLOAT')
+        gff.setType(SoundInstance.GFF_STRUCT_ID)
+        return SoundInstance(gff)

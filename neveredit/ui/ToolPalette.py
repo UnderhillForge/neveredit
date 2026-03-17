@@ -1,11 +1,14 @@
 """A set of GUI classes showing blueprint palettes and a toolbar"""
 import string
+import logging
 
 import wx
 import os
 
 from neveredit.game.Palette import Palette
 from neveredit.ui import WxUtils
+
+logger = logging.getLogger('neveredit')
 
 #images via resourcepackage
 from neveredit.resources.images import select_icon_png
@@ -85,6 +88,40 @@ class PaletteWindow(wx.TreeCtrl):
     def start_standalone(cls):
         cls.app.MainLoop()
     start_standalone = classmethod(start_standalone)
+
+class PlaceholderPalettePage(wx.Panel):
+    """Notebook page used to expose not-yet-implemented palette types."""
+
+    def __init__(self, parent, paletteType, message):
+        wx.Panel.__init__(self, parent, -1)
+        self.paletteType = paletteType
+
+        sizer = wx.BoxSizer(wx.VERTICAL)
+        title = wx.StaticText(self, -1, paletteType)
+        detail = wx.StaticText(self, -1, message)
+        detail.Wrap(220)
+
+        title_font = title.GetFont()
+        title_font.SetWeight(wx.FONTWEIGHT_BOLD)
+        title.SetFont(title_font)
+        detail.SetForegroundColour(wx.Colour(110, 110, 110))
+
+        sizer.Add(title, 0, wx.ALL, 10)
+        sizer.Add(detail, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
+        sizer.AddStretchSpacer()
+        self.SetSizer(sizer)
+
+    def GetSelection(self):
+        return wx.TreeItemId()
+
+    def Unselect(self):
+        return None
+
+    def SelectItem(self, item):
+        return None
+
+    def GetItemData(self, item=None):
+        return None
 
 TOOLSELECTIONEVENT = wx.NewEventType()
 
@@ -181,18 +218,28 @@ class ToolFrame(wx.MiniFrame):
         self.toolbar.Realize()
         self.toolIds = [self.selectId,self.paintId,self.rotateId,self.soundId,self.map2dId]
 
-        sublist = [ptype for ptype in Palette.PALETTE_TYPES
-                   if ptype not in ['Sound','Encounter',
-                                    'Trigger','Store','Item']]
-        self.stdPalettes = dict(zip(sublist,
-                                    [Palette.getStandardPalette(ptype)
-                                     for ptype in sublist]))
+        self.stdPalettes = {}
+        for _ptype in Palette.PALETTE_TYPES:
+            try:
+                self.stdPalettes[_ptype] = Palette.getStandardPalette(_ptype)
+            except Exception as _e:
+                import logging
+                logging.getLogger('neveredit').warning(
+                    'Palette load failed for %s: %s', _ptype, _e)
         self.notebook = wx.Notebook(self,-1,style=wx.NB_LEFT)
-        for type,palette in self.stdPalettes.items():
-            pw = PaletteWindow(self.notebook,-1)
-            pw.fromPalette(palette)
-            self.notebook.AddPage(pw,type)
-            pw.Bind(wx.EVT_TREE_SEL_CHANGED,self.treeItemSelected)
+        self.notebook.Bind(wx.EVT_NOTEBOOK_PAGE_CHANGED, self.onPalettePageChanged)
+        placeholderPages = {}
+        for type in Palette.PALETTE_TYPES:
+            palette = self.stdPalettes.get(type)
+            if palette is not None:
+                pw = PaletteWindow(self.notebook,-1)
+                pw.fromPalette(palette)
+                self.notebook.AddPage(pw,type)
+                pw.Bind(wx.EVT_TREE_SEL_CHANGED,self.treeItemSelected)
+                continue
+            placeholder = placeholderPages.get(type)
+            if placeholder is not None:
+                self.notebook.AddPage(placeholder, type)
 
         self.toggleToolOn(self.selectId)
         self.lastPaletteSelection = None
@@ -205,16 +252,29 @@ class ToolFrame(wx.MiniFrame):
             self.toolbar.ToggleTool(tid,tid==id)
         newEvent = ToolSelectionEvent(self.GetId(),id)
         if id != self.paintId:
-            self.lastPaletteSelection = self.getActivePaletteWindow().GetSelection()
-            self.getActivePaletteWindow().Unselect()
+            active = self.getActivePaletteWindow()
+            if hasattr(active, 'GetSelection'):
+                self.lastPaletteSelection = active.GetSelection()
+            if hasattr(active, 'Unselect'):
+                active.Unselect()
         else:
             if self.lastPaletteSelection:
                 self.getActivePaletteWindow().SelectItem(self.lastPaletteSelection)
                 self.lastPaletteSelection = None
             bp = self.getSelectedBlueprint()
             if bp:
-                newEvent.setData(bp.toInstance())
+                try:
+                    newEvent.setData(bp.toInstance())
+                except Exception as e:
+                    logger.warning('failed to create paint instance from blueprint: %s', e)
         self.GetEventHandler().AddPendingEvent(newEvent)        
+
+    def onPalettePageChanged(self,event):
+        # Keep paint payload synced with active tab so stale placeables are
+        # not reused when switching to creatures/doors/etc.
+        if self.toolbar.GetToolState(self.paintId):
+            self.toggleToolOn(self.paintId)
+        event.Skip()
             
     def treeItemSelected(self,event):
         if self.getActivePaletteWindow().GetItemData(event.GetItem()):
@@ -223,9 +283,15 @@ class ToolFrame(wx.MiniFrame):
 
     def getSelectedBlueprint(self):
         palette = self.getActivePaletteWindow()
+        if not hasattr(palette, 'GetSelection') or not hasattr(palette, 'GetItemData'):
+            return None
         data = palette.GetItemData(palette.GetSelection())
         if data:
-            return data.getBlueprint()
+            try:
+                return data.getBlueprint()
+            except Exception as e:
+                logger.warning('failed to resolve selected blueprint: %s', e)
+                return None
         
     def toolSelected(self,event):
         self.toggleToolOn(event.GetId())

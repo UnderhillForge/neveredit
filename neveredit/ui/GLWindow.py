@@ -90,6 +90,7 @@ class GLWindow(glcanvas.GLCanvas):
         }
         self._animationStartTime = time.time()
         self._animationTimeSeconds = 0.0
+        self._destroying = False
         self._animationTimer = wx.Timer(self)
         self.Bind(wx.EVT_TIMER, self.OnAnimationTimer, self._animationTimer)
         self._animationTimer.Start(33)
@@ -104,10 +105,35 @@ class GLWindow(glcanvas.GLCanvas):
         self.Bind(wx.EVT_KEY_DOWN, self.OnKeyDown)
         self.Bind(wx.EVT_KEY_UP, self.OnKeyUp)
 
+    def _stopAnimationTimer(self):
+        timer = getattr(self, '_animationTimer', None)
+        if timer is None:
+            return
+        try:
+            if timer.IsRunning():
+                timer.Stop()
+        except Exception:
+            pass
+        try:
+            self.Unbind(wx.EVT_TIMER, handler=self.OnAnimationTimer, source=timer)
+        except Exception:
+            pass
+        self._animationTimer = None
+
+    def Destroy(self):
+        # Avoid use-after-free crashes from late timer callbacks while wx tears
+        # down a GLCanvas.
+        self._destroying = True
+        self.animationsEnabled = False
+        self._stopAnimationTimer()
+        return glcanvas.GLCanvas.Destroy(self)
+
     def OnEraseBackground(self, event):
         pass
 
     def OnAnimationTimer(self, event):
+        if self._destroying:
+            return
         if not self.animationsEnabled:
             return
         if self.preprocessing:

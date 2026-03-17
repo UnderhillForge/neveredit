@@ -181,9 +181,14 @@ class ScriptEditor(wx.SplitterWindow):
         frame = self.GetParent()
         
         if Utils.iAmOnMac():
-            wx.App_SetMacExitMenuItemId(self.ID_EXIT)
-            wx.App_SetMacPreferencesMenuItemId(self.ID_PREFS)
-            wx.App_SetMacAboutMenuItemId(self.ID_ABOUT)
+            if hasattr(wx, 'App_SetMacExitMenuItemId'):
+                wx.App_SetMacExitMenuItemId(self.ID_EXIT)
+                wx.App_SetMacPreferencesMenuItemId(self.ID_PREFS)
+                wx.App_SetMacAboutMenuItemId(self.ID_ABOUT)
+            else:
+                wx.App.SetMacExitMenuItemId(self.ID_EXIT)
+                wx.App.SetMacPreferencesMenuItemId(self.ID_PREFS)
+                wx.App.SetMacAboutMenuItemId(self.ID_ABOUT)
 
         #menus
         self.filemenu = wx.Menu()

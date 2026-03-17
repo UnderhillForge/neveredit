@@ -9,6 +9,9 @@ from neveredit.game.Creature import CreatureInstance
 from neveredit.game.Tile import Tile
 from neveredit.game.WayPoint import WayPointInstance
 from neveredit.game.Sound import SoundInstance
+from neveredit.game.Trigger import TriggerInstance
+from neveredit.game.Encounter import EncounterInstance
+from neveredit.file.GFFFile import GFFFile
 from neveredit.util import neverglobals
 
 class Area (NeverData.NeverData):
@@ -39,6 +42,7 @@ class Area (NeverData.NeverData):
         'SunFogColor': 'BGRColour',
         'MoonFogColor': 'BGRColour',
         'Tag': 'CExoString',
+        'Tileset': 'ResRef,SET',
         'PlayerVsPlayer': '2daIndex,pvpsettings.2da,strref,strref',
         'LoadScreenID': '2daIndex,loadscreens.2da,StrRef,strref,Label'
         }
@@ -66,6 +70,7 @@ class Area (NeverData.NeverData):
     
     def __init__(self,erfFile,areaName):
         NeverData.NeverData.__init__(self)
+        self.erfFile = erfFile
         if isinstance(areaName, bytes):
             area_name_bytes = areaName.rstrip(b'\0')
             area_name_text = area_name_bytes.decode('latin1', 'ignore')
@@ -101,6 +106,8 @@ class Area (NeverData.NeverData):
         self.tileList = None
         self.waypointList = None
         self.soundList = None
+        self.triggerList = None
+        self.encounterList = None
         
     def readContents(self):
         if self.creatureList == None:
@@ -116,6 +123,10 @@ class Area (NeverData.NeverData):
             self.waypointList = [WayPointInstance(waypoint) for waypoint in waypoints]
             sounds = self.getSoundListStructs()
             self.soundList = [SoundInstance(sound) for sound in sounds]
+            triggers = self.getTriggerListStructs()
+            self.triggerList = [TriggerInstance(trigger) for trigger in triggers]
+            encounters = self.getEncounterListStructs()
+            self.encounterList = [EncounterInstance(encounter) for encounter in encounters]
 
     def getSoundListStructs(self):
         git = self.gffstructDict['git']
@@ -131,6 +142,36 @@ class Area (NeverData.NeverData):
             if git.getInterpretedEntry(label) is not None:
                 return label
         return 'SoundList'
+
+    def getTriggerListStructs(self):
+        git = self.gffstructDict['git']
+        for label in ('Trigger List', 'TriggerList', 'Triggers'):
+            value = git.getInterpretedEntry(label)
+            if value is not None:
+                return value or []
+        return []
+
+    def getTriggerListLabel(self):
+        git = self.gffstructDict['git']
+        for label in ('Trigger List', 'TriggerList', 'Triggers'):
+            if git.getInterpretedEntry(label) is not None:
+                return label
+        return 'Trigger List'
+
+    def getEncounterListStructs(self):
+        git = self.gffstructDict['git']
+        for label in ('Encounter List', 'EncounterList', 'Encounters'):
+            value = git.getInterpretedEntry(label)
+            if value is not None:
+                return value or []
+        return []
+
+    def getEncounterListLabel(self):
+        git = self.gffstructDict['git']
+        for label in ('Encounter List', 'EncounterList', 'Encounters'):
+            if git.getInterpretedEntry(label) is not None:
+                return label
+        return 'Encounter List'
 
     def _ensureGitList(self, label):
         git = self.gffstructDict['git']
@@ -150,6 +191,8 @@ class Area (NeverData.NeverData):
         self.itemList = None
         self.waypointList = None
         self.soundList = None
+        self.triggerList = None
+        self.encounterList = None
         
     def readTiles(self):
         if not self.tileList:
@@ -180,6 +223,8 @@ class Area (NeverData.NeverData):
         tags['placeables'] = [p['Tag'] for p in self.getPlaceables()]
         tags['items'] = [i['Tag'] for i in self.getItems()]
         tags['waypoints']=[w['Tag'] for w in self.getWayPoints()]
+        tags['triggers'] = [t['Tag'] for t in self.getTriggers()]
+        tags['encounters'] = [e['Tag'] for e in self.getEncounters()]
         return tags
     
     def getCreatures(self):
@@ -206,6 +251,14 @@ class Area (NeverData.NeverData):
         self.readContents()
         return self.soundList
 
+    def getTriggers(self):
+        self.readContents()
+        return self.triggerList
+
+    def getEncounters(self):
+        self.readContents()
+        return self.encounterList
+
     def addThing(self,thing):
         logger.info('trying to add thing ' + repr(thing.getNevereditId()) + ' (class ' + repr(thing.__class__) + ') to area')
         gff = thing.getMainGFFStruct()
@@ -231,6 +284,182 @@ class Area (NeverData.NeverData):
         elif isinstance(thing, SoundInstance):
             self._ensureGitList(self.getSoundListLabel()).append(gff)
             self.soundList.append(thing)
+        elif isinstance(thing, TriggerInstance):
+            self._ensureGitList(self.getTriggerListLabel()).append(gff)
+            self.triggerList.append(thing)
+        elif isinstance(thing, EncounterInstance):
+            self._ensureGitList(self.getEncounterListLabel()).append(gff)
+            self.encounterList.append(thing)
+
+    def _removeThingFromLists(self, thing_list, gff_list, thing):
+        if thing_list is None:
+            return False
+        index = None
+        try:
+            index = thing_list.index(thing)
+        except ValueError:
+            index = None
+
+        if index is None:
+            candidate = thing.getMainGFFStruct()
+            if candidate is not None:
+                for i, existing in enumerate(thing_list):
+                    try:
+                        if existing.getMainGFFStruct() is candidate:
+                            index = i
+                            break
+                    except Exception:
+                        continue
+
+        if index is None:
+            return False
+
+        del thing_list[index]
+        if gff_list is not None and index < len(gff_list):
+            del gff_list[index]
+        return True
+
+    def removeThing(self, thing):
+        if thing is None:
+            return False
+        self.readContents()
+
+        if isinstance(thing, CreatureInstance):
+            return self._removeThingFromLists(self.creatureList,
+                                              self._ensureGitList('Creature List'),
+                                              thing)
+        if isinstance(thing, ItemInstance):
+            return self._removeThingFromLists(self.itemList,
+                                              self._ensureGitList('List'),
+                                              thing)
+        if isinstance(thing, DoorInstance):
+            return self._removeThingFromLists(self.doorList,
+                                              self._ensureGitList('Door List'),
+                                              thing)
+        if isinstance(thing, PlaceableInstance):
+            return self._removeThingFromLists(self.placeableList,
+                                              self._ensureGitList('Placeable List'),
+                                              thing)
+        if isinstance(thing, WayPointInstance):
+            return self._removeThingFromLists(self.waypointList,
+                                              self._ensureGitList('WaypointList'),
+                                              thing)
+        if isinstance(thing, SoundInstance):
+            return self._removeThingFromLists(self.soundList,
+                                              self._ensureGitList(self.getSoundListLabel()),
+                                              thing)
+        if isinstance(thing, TriggerInstance):
+            return self._removeThingFromLists(self.triggerList,
+                                              self._ensureGitList(self.getTriggerListLabel()),
+                                              thing)
+        if isinstance(thing, EncounterInstance):
+            return self._removeThingFromLists(self.encounterList,
+                                              self._ensureGitList(self.getEncounterListLabel()),
+                                              thing)
+        return False
+
+    def _normalizeResRef(self, value):
+        if value is None:
+            return ''
+        if isinstance(value, bytes):
+            text = value.decode('latin1', 'ignore')
+        else:
+            text = str(value)
+        text = text.strip().strip('\0').lower()
+        out = []
+        for ch in text:
+            if ch.isalnum() or ch == '_':
+                out.append(ch)
+            else:
+                out.append('_')
+        text = ''.join(out)
+        while '__' in text:
+            text = text.replace('__', '_')
+        return text[:16].strip('_')
+
+    def _blueprintExtensionForThing(self, thing):
+        if isinstance(thing, CreatureInstance):
+            return 'utc'
+        if isinstance(thing, DoorInstance):
+            return 'utd'
+        if isinstance(thing, PlaceableInstance):
+            return 'utp'
+        if isinstance(thing, ItemInstance):
+            return 'uti'
+        if isinstance(thing, WayPointInstance):
+            return 'utw'
+        if isinstance(thing, SoundInstance):
+            return 'uts'
+        if isinstance(thing, TriggerInstance):
+            return 'utt'
+        if isinstance(thing, EncounterInstance):
+            return 'ute'
+        return None
+
+    def _applyBlueprintStructFixups(self, gff, thing, resref):
+        for key in ('ObjectId',
+                    'X', 'Y', 'Z', 'Bearing',
+                    'XPosition', 'YPosition', 'ZPosition',
+                    'XOrientation', 'YOrientation'):
+            if gff.hasEntry(key):
+                gff.removeEntry(key)
+
+        if gff.hasEntry('Geometry') and not isinstance(thing, (TriggerInstance, EncounterInstance)):
+            gff.removeEntry('Geometry')
+
+        if not gff.hasEntry('Comment'):
+            gff.add('Comment', '', 'CExoString')
+        if not gff.hasEntry('PaletteID'):
+            gff.add('PaletteID', 0, 'BYTE')
+
+        if gff.hasEntry('TemplateResRef'):
+            gff.setInterpretedEntry('TemplateResRef', resref)
+        else:
+            gff.add('TemplateResRef', resref, 'ResRef')
+
+    def saveThingAsBlueprint(self, thing, resref):
+        if thing is None:
+            return False, 'No object selected.'
+        if self.erfFile is None:
+            return False, 'Cannot save custom blueprint for this area.'
+
+        extension = self._blueprintExtensionForThing(thing)
+        if not extension:
+            return False, 'This object type cannot be saved as a custom blueprint.'
+
+        resref = self._normalizeResRef(resref)
+        if not resref:
+            return False, 'Invalid blueprint resref.'
+
+        struct = thing.getMainGFFStruct()
+        if struct is None:
+            return False, 'Object data is missing.'
+        struct = struct.clone()
+        self._applyBlueprintStructFixups(struct, thing, resref)
+
+        gff = GFFFile()
+        gff.rootStructure = struct
+        gff.type = extension.upper().ljust(4)
+        gff.version = 'V3.2'
+
+        template_resref = ''
+        if struct.hasEntry('TemplateResRef'):
+            template_resref = self._normalizeResRef(struct.getInterpretedEntry('TemplateResRef'))
+        if template_resref:
+            entry = self.erfFile.getEntryByNameAndExtension(template_resref, extension)
+            if entry:
+                try:
+                    source_gff = self.erfFile.getEntryContents(entry)
+                    if source_gff.type:
+                        gff.type = source_gff.type
+                    if source_gff.version:
+                        gff.version = source_gff.version
+                except Exception:
+                    pass
+
+        resource_name = resref + '.' + extension
+        self.erfFile.addResourceByName(resource_name, gff)
+        return True, resource_name
         
     def getTileSet(self):
         resref = self.gffstructDict['are'].getInterpretedEntry('Tileset')

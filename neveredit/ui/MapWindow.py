@@ -15,6 +15,7 @@ import threading
 import math
 import os
 import json
+import string
 Set = set
 import time
 import profile
@@ -25,10 +26,13 @@ from neveredit.ui import ToolPalette
 from neveredit.ui.MapLayersWindow import MapLayersWindow
 from neveredit.game.Module import Module
 from neveredit.game.Sound import SoundInstance
+from neveredit.game.Trigger import TriggerInstance
+from neveredit.game.Encounter import EncounterInstance
 from neveredit.game.ResourceManager import ResourceManager
 from neveredit.game.ChangeNotification import VisualChangeListener
 from neveredit.util.Progressor import Progressor
 from neveredit.util import neverglobals
+from neveredit.util import gltf_export
 from neveredit.file.GFFFile import GFFStruct
 from neveredit.file import SoundSetFile
 
@@ -179,6 +183,7 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
         self.placeables = None
         self.doors = None
         self.creatures = None
+        self.encounters = None
         self.waypoints = None
         self.sounds = []
         self.lock = threading.Lock()
@@ -209,6 +214,9 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
         self._ambientPreviewRawCache = {}
         self._ambientPreviewSSFCountCache = {}
         self.soundRadiusEditing = None
+        self._thingClipboard = None
+        self._contextMenuThing = None
+        self._contextMenuPoint = None
 
         # In-memory 2D drafting overlay for top-down terrain/height/object planning.
         self.map2DCells = {}
@@ -240,7 +248,95 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
         self._missingSelectionWarnings = set()
         self._missingModelWarnings = set()
         wx.CallAfter(self._syncMapLayersWindowVisibility)
+
+        # Toon (cel) shader
+        self._toonProgram = None
+        self._toonShaderFailed = False
+        self.toonShading = False
         
+    _TOON_VERT = '''
+varying vec3 Normal;
+void main() {
+    Normal = normalize(gl_NormalMatrix * gl_Normal);
+    gl_Position = ftransform();
+}
+'''
+    _TOON_FRAG = '''
+varying vec3 Normal;
+uniform vec3 LightPosition;
+void main() {
+    float intensity = dot(normalize(LightPosition), normalize(Normal));
+    vec4 color;
+    if      (intensity > 0.95) color = vec4(1.0, 1.0, 1.0, 1.0);
+    else if (intensity > 0.50) color = vec4(0.6, 0.6, 0.6, 1.0);
+    else if (intensity > 0.25) color = vec4(0.4, 0.4, 0.4, 1.0);
+    else                       color = vec4(0.2, 0.2, 0.2, 1.0);
+    gl_FragColor = color;
+}
+'''
+
+    def _build_toon_shader(self):
+        """Compile and link the toon shader program. Returns the GL program id
+        or 0 if shaders are not supported or compilation failed."""
+        try:
+            from OpenGL.GL import (glCreateShader, glShaderSource,
+                                   glCompileShader, glGetShaderiv,
+                                   glGetShaderInfoLog, glCreateProgram,
+                                   glAttachShader, glLinkProgram,
+                                   glGetProgramiv, glGetProgramInfoLog,
+                                   GL_VERTEX_SHADER, GL_FRAGMENT_SHADER,
+                                   GL_COMPILE_STATUS, GL_LINK_STATUS)
+            def _compile(src, kind):
+                s = glCreateShader(kind)
+                glShaderSource(s, src)
+                glCompileShader(s)
+                if not glGetShaderiv(s, GL_COMPILE_STATUS):
+                    raise RuntimeError(glGetShaderInfoLog(s))
+                return s
+            vert = _compile(self._TOON_VERT, GL_VERTEX_SHADER)
+            frag = _compile(self._TOON_FRAG, GL_FRAGMENT_SHADER)
+            prog = glCreateProgram()
+            glAttachShader(prog, vert)
+            glAttachShader(prog, frag)
+            glLinkProgram(prog)
+            if not glGetProgramiv(prog, GL_LINK_STATUS):
+                raise RuntimeError(glGetProgramInfoLog(prog))
+            return prog
+        except Exception as e:
+            logger.warning('Toon shader build failed: %s', e)
+            return 0
+
+    def _toon_use(self):
+        """Activate toon shader if available, building it lazily.
+        Returns True if the shader program is active."""
+        if self._toonShaderFailed:
+            return False
+        if self._toonProgram is None:
+            prog = self._build_toon_shader()
+            if not prog:
+                self._toonShaderFailed = True
+                return False
+            self._toonProgram = prog
+        try:
+            from OpenGL.GL import glUseProgram, glGetUniformLocation, glUniform3f
+            glUseProgram(self._toonProgram)
+            loc = glGetUniformLocation(self._toonProgram, 'LightPosition')
+            if loc >= 0:
+                glUniform3f(loc, float(self.viewX), float(self.viewY), float(self.viewZ))
+            return True
+        except Exception as e:
+            logger.warning('Toon shader activation failed; disabling toon mode: %s', e)
+            self._toonShaderFailed = True
+            self.toonShading = False
+            return False
+
+    def _toon_unuse(self):
+        try:
+            from OpenGL.GL import glUseProgram
+            glUseProgram(0)
+        except Exception:
+            pass
+
     def Destroy(self):
         self._save2DDraftForCurrentArea()
         if self.mapLayersWindow is not None:
@@ -305,6 +401,7 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
         for key, value in list(layerState.items()):
             if key in self.layerVisibility:
                 self.layerVisibility[key] = bool(value)
+        self._pruneSelectionForLayerVisibility()
         self._saveLayerVisibility()
         self.requestRedraw()
 
@@ -422,41 +519,286 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
             self.requestRedraw()
             return
         if self.highlight != None:
-            self.selectHighlighted(evt)
-            self.popup = wx.Menu()
             thing = self.getThingHit(self.highlight)
-            tag = thing['Tag']
-            location = 'X:%.2f Y:%.2f Z:%.2f' % (thing.getX(),thing.getY(),thing.getZ())
+            if not self._isThingSelectableForLayers(thing):
+                self.highlight = None
+                self.highlightBox = None
+                self.requestRedraw()
+                return
+            self.selectHighlighted(evt)
+            self._ensureContextMenuIds()
+            self._contextMenuThing = thing
             try:
-                info = 'ID: %d' % thing.getObjectId()
-            except:
-                info = None
-            if not hasattr(self,'COPY_TAG_ID'):
-                self.COPY_TAG_ID = wx.NewId()
-                self.Bind(wx.EVT_MENU, self.OnCopyTag, id=self.COPY_TAG_ID)        
-                self.LOCATION_ID = wx.NewId()
-                self.INFO_ID = wx.NewId()
-            self.popup.Append(self.COPY_TAG_ID,'Copy Object Tag "%s" to Clipboard' % tag)
-            self.popup.Append(self.LOCATION_ID,'Location: ' + location)
-            if info:
-                self.popup.Append(self.INFO_ID,info)
-            self.popup.Enable(self.LOCATION_ID,False)
-            self.PopupMenu(self.popup, evt.GetPosition())
-            self.popup.Destroy()
-            self.beingDragged = None
-            self.popup = None
+                self._contextMenuPoint = self.mouseToPointOnBasePlane(float(evt.GetX()),
+                                                                       float(self.height - evt.GetY()))
+            except Exception:
+                self._contextMenuPoint = (float(thing.getX()), float(thing.getY()))
 
-    def OnCopyTag(self,evt):
-        if not wx.TheClipboard.Open():
-            logger.error("Can't open system clipboard")
+            menu = wx.Menu()
+            menu.Append(self.EDIT_THING_ID, 'Edit')
+            menu.Append(self.COPY_THING_ID, 'Copy')
+            menu.Append(self.PASTE_THING_ID, 'Paste')
+            menu.Append(self.SAVE_CUSTOM_THING_ID, 'Save Custom')
+            menu.Append(self.REMOVE_THING_ID, 'Remove')
+            menu.AppendSeparator()
+            menu.Append(self.EXPORT_WEB_THING_ID, 'Export for Web (glTF)')
+            menu.Enable(self.PASTE_THING_ID, self._thingClipboard is not None)
+            menu.Enable(self.EXPORT_WEB_THING_ID, bool(thing.getModel()))
+
+            self.PopupMenu(menu, evt.GetPosition())
+            menu.Destroy()
+            self.beingDragged = None
+            self._contextMenuThing = None
+
+    def _ensureContextMenuIds(self):
+        if hasattr(self, 'EDIT_THING_ID'):
             return
-        data = wx.TextDataObject(self.getThingHit(self.highlight)['Tag'])
-        wx.TheClipboard.AddData(data)
-        wx.TheClipboard.Close()        
+        self.EDIT_THING_ID = wx.NewId()
+        self.COPY_THING_ID = wx.NewId()
+        self.PASTE_THING_ID = wx.NewId()
+        self.SAVE_CUSTOM_THING_ID = wx.NewId()
+        self.REMOVE_THING_ID = wx.NewId()
+        self.EXPORT_WEB_THING_ID = wx.NewId()
+
+        self.Bind(wx.EVT_MENU, self.OnContextEditThing, id=self.EDIT_THING_ID)
+        self.Bind(wx.EVT_MENU, self.OnContextCopyThing, id=self.COPY_THING_ID)
+        self.Bind(wx.EVT_MENU, self.OnContextPasteThing, id=self.PASTE_THING_ID)
+        self.Bind(wx.EVT_MENU, self.OnContextSaveCustomThing, id=self.SAVE_CUSTOM_THING_ID)
+        self.Bind(wx.EVT_MENU, self.OnContextRemoveThing, id=self.REMOVE_THING_ID)
+        self.Bind(wx.EVT_MENU, self.OnContextExportThingForWeb, id=self.EXPORT_WEB_THING_ID)
+
+    def _getContextMenuThing(self):
+        thing = self._contextMenuThing
+        if thing is not None:
+            return thing
+        if self.highlight is None:
+            return None
+        return self.getThingHit(self.highlight)
+
+    def _notifyThingListChanged(self, selectedThing=None):
+        selected_id = None
+        if selectedThing is not None:
+            selected_id = selectedThing.getNevereditId()
+        event = ThingAddedEvent(self.GetId(), selected_id)
+        self.GetEventHandler().AddPendingEvent(event.Clone())
+
+    def _assignFreshObjectId(self, thing):
+        if thing is None or not hasattr(thing, 'hasProperty'):
+            return
+        if not thing.hasProperty('ObjectId'):
+            return
+        max_id = 0
+        for existing in self.fullThingList:
+            if not hasattr(existing, 'hasProperty') or not existing.hasProperty('ObjectId'):
+                continue
+            try:
+                object_id = int(existing.getObjectId())
+            except Exception:
+                continue
+            if object_id > max_id:
+                max_id = object_id
+        thing['ObjectId'] = max_id + 1
+
+    def _normalizeResRef(self, value):
+        if value is None:
+            return ''
+        if isinstance(value, bytes):
+            text = value.decode('latin1', 'ignore')
+        else:
+            text = str(value)
+        text = text.strip().strip('\0').lower()
+        out = []
+        for ch in text:
+            if ch in string.ascii_lowercase or ch in string.digits or ch == '_':
+                out.append(ch)
+            else:
+                out.append('_')
+        text = ''.join(out)
+        while '__' in text:
+            text = text.replace('__', '_')
+        return text[:16].strip('_')
+
+    def _defaultBlueprintResRef(self, thing):
+        if thing is None:
+            return 'custom_asset'
+        template_resref = None
+        if hasattr(thing, 'hasProperty') and thing.hasProperty('TemplateResRef'):
+            template_resref = thing['TemplateResRef']
+        candidate = self._normalizeResRef(template_resref)
+        if candidate:
+            return candidate
+        candidate = self._normalizeResRef(thing['Tag'])
+        if candidate:
+            return candidate
+        return 'custom_asset'
+
+    def _trySwitchToPropsPage(self):
+        notebook = self.GetParent()
+        if notebook and hasattr(notebook, 'selectPageByTag'):
+            notebook.selectPageByTag('props')
+            if hasattr(notebook, 'setPageSyncByTag'):
+                notebook.setPageSyncByTag('props', True)
+
+    def OnContextEditThing(self,evt):
+        thing = self._getContextMenuThing()
+        if thing is None:
+            return
+        self.selectThingById(thing.getNevereditId())
+        self._trySwitchToPropsPage()
+
+    def OnContextCopyThing(self,evt):
+        thing = self._getContextMenuThing()
+        if thing is None or not self._isThingSelectableForLayers(thing):
+            return
+        try:
+            self._thingClipboard = thing.clone()
+        except Exception:
+            logger.exception('failed to copy thing')
+            self._thingClipboard = None
+            self.setStatus('Copy failed.')
+            return
+        self.setStatus('Copied "%s".' % thing.getName())
+
+    def OnContextPasteThing(self,evt):
+        if self._thingClipboard is None:
+            self.setStatus('Nothing to paste.')
+            return
+        if not self.area:
+            self.setStatus('No active area for paste.')
+            return
+        try:
+            thing = self._thingClipboard.clone()
+        except Exception:
+            logger.exception('failed to clone clipboard thing for paste')
+            self.setStatus('Paste failed.')
+            return
+
+        if hasattr(thing, 'setX') and hasattr(thing, 'setY'):
+            if self._contextMenuPoint:
+                x, y = self._contextMenuPoint
+            else:
+                x, y = self.lookingAtX, self.lookingAtY
+            thing.setX(float(x))
+            thing.setY(float(y))
+        self._assignFreshObjectId(thing)
+
+        before = len(self.fullThingList)
+        self.area.addThing(thing)
+        self.refreshThingList()
+        if len(self.fullThingList) <= before:
+            self.setStatus('Paste is not supported for this object type.')
+            return
+
+        self.makeQuadTree()
+        self.selected = []
+        self.highlight = None
+        try:
+            index = self.fullThingList.index(thing)
+            self.selected = [index]
+            self.highlight = index
+            self.setHighlightBox(index)
+        except Exception:
+            pass
+        self.requestRedraw()
+        self._notifyThingListChanged(thing)
+        self.setStatus('Pasted "%s".' % thing.getName())
+
+    def OnContextSaveCustomThing(self,evt):
+        thing = self._getContextMenuThing()
+        if thing is None or not self.area:
+            return
+        default_resref = self._defaultBlueprintResRef(thing)
+        dlg = wx.TextEntryDialog(self,
+                                 'Enter blueprint resref (max 16 chars):',
+                                 'Save Custom',
+                                 default_resref)
+        try:
+            if dlg.ShowModal() != wx.ID_OK:
+                return
+            resref = self._normalizeResRef(dlg.GetValue())
+        finally:
+            dlg.Destroy()
+
+        if not resref:
+            self.setStatus('Invalid blueprint resref.')
+            return
+
+        ok, message = self.area.saveThingAsBlueprint(thing, resref)
+        if not ok:
+            self.setStatus(message)
+            return
+
+        neverglobals.getResourceManager().moduleResourceListChanged()
+        self.setStatus('Saved custom blueprint: %s' % message)
+
+    def OnContextRemoveThing(self,evt):
+        thing = self._getContextMenuThing()
+        if thing is None or not self.area:
+            return
+        if not self.area.removeThing(thing):
+            self.setStatus('Remove failed.')
+            return
+
+        self.refreshThingList()
+        self.makeQuadTree()
+        self.selected = []
+        self.highlight = None
+        self.highlightBox = None
+        self.beingDragged = None
+        self.requestRedraw()
+        self._notifyThingListChanged(None)
+        self.setStatus('Removed "%s".' % thing.getName())
+
+    def OnContextExportThingForWeb(self,evt):
+        thing = self._getContextMenuThing()
+        if thing is None:
+            return
+        model = thing.getModel()
+        if not model:
+            self.setStatus('Export for Web is only available for model-based assets.')
+            return
+
+        model_name = self._defaultBlueprintResRef(thing) or 'asset'
+
+        dlg = wx.DirDialog(self,
+                           'Choose export folder for "%s"' % model_name,
+                           style=wx.DD_DEFAULT_STYLE)
+        try:
+            if dlg.ShowModal() != wx.ID_OK:
+                return
+            output_dir = dlg.GetPath()
+        finally:
+            dlg.Destroy()
+
+        try:
+            result = gltf_export.export_model_to_gltf_folder(
+                model,
+                output_dir,
+                model_name,
+                self.isRenderableMeshNode,
+                self.getNodeDrawMode)
+        except Exception:
+            logger.exception('failed to export for %s', thing.getName())
+            self.setStatus('Export for Web failed.')
+            return
+
+        parts = ['Exported %s.gltf' % model_name]
+        if result.get('texture_count', 0):
+            parts.append('%d texture(s)' % result['texture_count'])
+        if result.get('animation_count', 0):
+            parts.append('%d animation(s)' % result['animation_count'])
+        self.setStatus(' — '.join(parts) + '  →  ' + output_dir)
+
+    _SELECT_HINT = ('Selected: drag to move  |  Ctrl+drag: raise/lower Z  |  Rotate tool: drag to rotate  '
+                    '|  Arrow keys: nudge XY  |  PgUp/PgDn: nudge Z  |  [/]: rotate 15\xb0')
 
     def selectHighlighted(self,evt):
+        thing = self.getThingHit(self.highlight)
+        if thing is None or not self._isThingSelectableForLayers(thing):
+            return
         self.selected = [self.highlight]
-        self.beingDragged = self.getThingHit(self.highlight)
+        self.setStatus(self._SELECT_HINT)
+        self.beingDragged = thing
         event = SingleSelectionEvent(self.GetId(),
                                      self.beingDragged.getNevereditId())
         # to remove if AddPending event clones the event
@@ -493,6 +835,11 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
            self.mode == ToolPalette.ROTATE_TOOL:
             if self.highlight != None:
                 thing = self.getThingHit(self.highlight)
+                if thing is None or not self._isThingSelectableForLayers(thing):
+                    self.highlight = None
+                    self.highlightBox = None
+                    self.requestRedraw()
+                    return
                 if self.mode == ToolPalette.SELECTION_TOOL and self._isNearSoundRadiusHandle(thing, evt):
                     self.soundRadiusEditing = thing
                     self.selected = [self.highlight]
@@ -582,6 +929,8 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
             closestIntersect = sys.maxsize
             toHighlight = -1
             for thing,id in contents:
+                if not self._isThingSelectableForLayers(thing):
+                    continue
                 if thing.getModel():
                     sphere = [Numeric.array(thing.getModel().boundingSphere[0]),
                               thing.getModel().boundingSphere[1]]
@@ -592,6 +941,14 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
                     if intersect and intersect < closestIntersect:
                         toHighlight = id
                         closestIntersect = intersect
+                elif self._isPolygonRegionThing(thing):
+                    if self._isPointInsideTrigger(thing, x, y):
+                        center_x, center_y = self._getTriggerCentroid(thing)
+                        intersect = math.sqrt((center_x - x) * (center_x - x) +
+                                              (center_y - y) * (center_y - y))
+                        if intersect < closestIntersect:
+                            toHighlight = id
+                            closestIntersect = intersect
                 elif hasattr(thing, 'getRadius'):
                     dx = thing.getX() - x
                     dy = thing.getY() - y
@@ -841,6 +1198,15 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
             self.requestRedraw()
             return
 
+        if key_char == 's':
+            self.toonShading = not self.toonShading
+            if self.toonShading:
+                self.setStatus('Toon shading: on  (press S to toggle)')
+            else:
+                self.setStatus('Toon shading: off')
+            self.requestRedraw()
+            return
+
         if key_char == 'v':
             self.mapLayersWindowVisible = not self.mapLayersWindowVisible
             self._syncMapLayersWindowVisibility()
@@ -850,6 +1216,39 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
                 self.setStatus('Map Layers window: hidden')
             self._saveLayerVisibility()
             return
+
+        # ── Keyboard object transforms ──────────────────────────────────────
+        if self.mode in (ToolPalette.SELECTION_TOOL, ToolPalette.ROTATE_TOOL) and self.selected:
+            thing = self.getThingHit(self.selected[0])
+            if thing is not None:
+                kc = evt.GetKeyCode()
+                _nudge = 0.1
+                _rot_step = math.pi / 12.0  # 15 degrees
+                moved = False
+                if kc == wx.WXK_LEFT:
+                    thing.setX(thing.getX() - _nudge); moved = True
+                elif kc == wx.WXK_RIGHT:
+                    thing.setX(thing.getX() + _nudge); moved = True
+                elif kc == wx.WXK_UP:
+                    thing.setY(thing.getY() + _nudge); moved = True
+                elif kc == wx.WXK_DOWN:
+                    thing.setY(thing.getY() - _nudge); moved = True
+                elif kc == wx.WXK_PAGEUP:
+                    z = min(25.0, thing.getZ() + _nudge)
+                    thing.setZ(z); moved = True
+                elif kc == wx.WXK_PAGEDOWN:
+                    z = max(0.0, thing.getZ() - _nudge)
+                    thing.setZ(z); moved = True
+                elif key_char == ']':
+                    thing.setBearing((thing.getBearing() + _rot_step) % (2.0 * math.pi)); moved = True
+                elif key_char == '[':
+                    thing.setBearing((thing.getBearing() - _rot_step) % (2.0 * math.pi)); moved = True
+                if moved:
+                    event = MoveEvent(self.GetId(), thing.getNevereditId(),
+                                      thing.getX(), thing.getY(), thing.getBearing())
+                    self.GetEventHandler().AddPendingEvent(event.Clone())
+                    self.requestRedraw()
+                    return
 
         if evt.GetKeyCode() == 308: #ctrl
             self.holdZ = 1
@@ -1047,6 +1446,131 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
     
     def getContentsForPoint(self,x,y):
         return self.getContentsForPointSimplifiedHelper(x,y,self.quadTreeRoot)
+
+    def _boundsToTileCoverage(self, min_x, min_y, max_x, max_y):
+        if not self.area:
+            return []
+        area_width = max(0, self.area.getWidth() - 1)
+        area_height = max(0, self.area.getHeight() - 1)
+        start_x = int(math.floor(float(min_x) / 10.0))
+        start_y = int(math.floor(float(min_y) / 10.0))
+        end_x = int(math.floor(float(max_x) / 10.0))
+        end_y = int(math.floor(float(max_y) / 10.0))
+        start_x = max(0, min(area_width, start_x))
+        start_y = max(0, min(area_height, start_y))
+        end_x = max(0, min(area_width, end_x))
+        end_y = max(0, min(area_height, end_y))
+        coverage = []
+        for y in range(start_y, end_y + 1):
+            for x in range(start_x, end_x + 1):
+                coverage.append((x, y))
+        return coverage
+
+    def _getTriggerLocalPoints(self, thing):
+        points = []
+        if hasattr(thing, 'getGeometryPoints'):
+            try:
+                geometry_points = thing.getGeometryPoints()
+            except Exception:
+                geometry_points = []
+            for point in geometry_points:
+                try:
+                    points.append((float(point.getX()),
+                                   float(point.getY()),
+                                   float(point.getZ())))
+                except Exception:
+                    continue
+        if points:
+            return points
+        return list(getattr(thing, 'DEFAULT_GEOMETRY_POINTS', []))
+
+    def _isPolygonRegionThing(self, thing):
+        return isinstance(thing, (TriggerInstance, EncounterInstance))
+
+    def _getTriggerWorldPoints(self, thing):
+        angle = float(thing.getBearing() or 0.0)
+        cos_angle = math.cos(angle)
+        sin_angle = math.sin(angle)
+        origin_x = float(thing.getX())
+        origin_y = float(thing.getY())
+        origin_z = float(thing.getZ())
+        world_points = []
+        for local_x, local_y, local_z in self._getTriggerLocalPoints(thing):
+            world_points.append((origin_x + local_x * cos_angle - local_y * sin_angle,
+                                 origin_y + local_x * sin_angle + local_y * cos_angle,
+                                 origin_z + local_z))
+        return world_points
+
+    def _getTriggerBounds(self, thing):
+        points = self._getTriggerWorldPoints(thing)
+        if not points:
+            return None
+        xs = [point[0] for point in points]
+        ys = [point[1] for point in points]
+        return min(xs), min(ys), max(xs), max(ys)
+
+    def _getTriggerCentroid(self, thing):
+        points = self._getTriggerWorldPoints(thing)
+        if not points:
+            return float(thing.getX()), float(thing.getY())
+        count = float(len(points))
+        return (sum([point[0] for point in points]) / count,
+                sum([point[1] for point in points]) / count)
+
+    def _distancePointToSegment(self, px, py, ax, ay, bx, by):
+        dx = bx - ax
+        dy = by - ay
+        if dx == 0.0 and dy == 0.0:
+            return math.sqrt((px - ax) * (px - ax) + (py - ay) * (py - ay))
+        t = ((px - ax) * dx + (py - ay) * dy) / float(dx * dx + dy * dy)
+        t = max(0.0, min(1.0, t))
+        nx = ax + t * dx
+        ny = ay + t * dy
+        return math.sqrt((px - nx) * (px - nx) + (py - ny) * (py - ny))
+
+    def _isPointInsideTrigger(self, thing, x, y):
+        points = self._getTriggerWorldPoints(thing)
+        if len(points) < 3:
+            return False
+        inside = False
+        for i in range(len(points)):
+            x1, y1, _ = points[i]
+            x2, y2, _ = points[(i + 1) % len(points)]
+            intersects = ((y1 > y) != (y2 > y)) and \
+                         (x < (x2 - x1) * (y - y1) / float((y2 - y1) or 1e-9) + x1)
+            if intersects:
+                inside = not inside
+        if inside:
+            return True
+        for i in range(len(points)):
+            x1, y1, _ = points[i]
+            x2, y2, _ = points[(i + 1) % len(points)]
+            if self._distancePointToSegment(x, y, x1, y1, x2, y2) <= 0.35:
+                return True
+        return False
+
+    def _getThingTileCoverage(self, thing):
+        if not self.area:
+            return []
+        if self._isPolygonRegionThing(thing):
+            bounds = self._getTriggerBounds(thing)
+            if bounds is not None:
+                return self._boundsToTileCoverage(bounds[0], bounds[1], bounds[2], bounds[3])
+        if hasattr(thing, 'getRadius'):
+            radius = max(0.1, float(thing.getRadius()))
+            return self._boundsToTileCoverage(float(thing.getX()) - radius,
+                                              float(thing.getY()) - radius,
+                                              float(thing.getX()) + radius,
+                                              float(thing.getY()) + radius)
+        x = int(math.floor(float(thing.getX()) / 10.0))
+        y = int(math.floor(float(thing.getY()) / 10.0))
+        if x >= self.area.getWidth():
+            x = self.area.getWidth() - 1
+        if y >= self.area.getHeight():
+            y = self.area.getHeight() - 1
+        x = max(0, x)
+        y = max(0, y)
+        return [(x, y)]
 
     def getContentsForPointHelper(self,x,y,node):
         if not node.children:
@@ -1249,13 +1773,8 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
             for j in range(self.area.getWidth()):
                 self.thingMap[i][j] = {'tiles':[],'things':[]}
         for i,thing in enumerate(self.fullThingList):
-            x = int(math.floor(thing.getX() / 10.0))
-            y = int(math.floor(thing.getY() / 10.0))
-            if x == self.area.getWidth(): # doors can be at the edges
-                x -= 1
-            if y == self.area.getHeight():
-                y -= 1
-            self.thingMap[y][x]['things'].append((thing,i))
+            for x, y in self._getThingTileCoverage(thing):
+                self.thingMap[y][x]['things'].append((thing,i))
         for i,tile in enumerate(self.tiles):
             x = i % self.area.getWidth()
             y = i // self.area.getWidth()
@@ -1407,7 +1926,9 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
             self.placeables = None
             self.doors = None
             self.creatures = None
+            self.encounters = None
             self.tiles = None
+            self.triggers = None
             self.waypoints = None
             self.sounds = None
         else:
@@ -1425,6 +1946,8 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
             self.doors = area.getDoors()
             self.creatures = area.getCreatures()
             self.tiles = area.getTiles()
+            self.triggers = area.getTriggers()
+            self.encounters = area.getEncounters()
             self.waypoints = area.getWayPoints()
             self.sounds = area.getSounds()
             self.preprocessed = False
@@ -1446,9 +1969,48 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
         self.requestRedraw()
 
     def refreshThingList(self):
-        self.fullThingList = (self.doors or []) + (self.placeables or []) + (self.creatures or []) + (self.waypoints or []) + (self.sounds or [])
+        self.fullThingList = ((self.doors or []) +
+                              (self.placeables or []) +
+                              (self.creatures or []) +
+                              (self.triggers or []) +
+                              (self.encounters or []) +
+                              (self.waypoints or []) +
+                              (self.sounds or []))
         self.waypointIdSet = Set([w.getNevereditId() for w in (self.waypoints or [])])
         self.soundIdSet = Set([s.getNevereditId() for s in (self.sounds or [])])
+
+    def _isThingSelectableForLayers(self, thing):
+        return self._isThingVisibleForLayers(thing)
+
+    def _pruneSelectionForLayerVisibility(self):
+        changed = False
+
+        if self.highlight is not None:
+            highlighted = self.getThingHit(self.highlight)
+            if not self._isThingSelectableForLayers(highlighted):
+                self.highlight = None
+                self.highlightBox = None
+                changed = True
+
+        if self.selected:
+            filtered = []
+            for sid in self.selected:
+                thing = self.getThingHit(sid)
+                if thing is not None and self._isThingSelectableForLayers(thing):
+                    filtered.append(sid)
+            if filtered != self.selected:
+                self.selected = filtered
+                changed = True
+
+        if self.beingDragged is not None and not self._isThingSelectableForLayers(self.beingDragged):
+            self.beingDragged = None
+            changed = True
+
+        if self.soundRadiusEditing is not None and not self._isThingSelectableForLayers(self.soundRadiusEditing):
+            self.soundRadiusEditing = None
+            changed = True
+
+        return changed
 
     def _isThingVisibleForLayers(self, thing):
         if thing is None:
@@ -1968,7 +2530,9 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
     def drawThing(self,thing,name):
         model = thing.getModel()
         if not model:
-            if hasattr(thing, 'getRadius'):
+            if self._isPolygonRegionThing(thing):
+                self._drawTriggerThing(thing, name)
+            elif hasattr(thing, 'getRadius'):
                 self._drawSoundThing(thing, name)
             return
         root = model.getRootNode()
@@ -2009,6 +2573,50 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
                        math.sin(theta) * radius,
                        0.0)
         glEnd()
+
+    def _drawTriggerThing(self, thing, name):
+        points = self._getTriggerLocalPoints(thing)
+        if len(points) < 3:
+            return
+        glPushMatrix()
+        try:
+            glTranslatef(thing.getX(), thing.getY(), thing.getZ())
+            if self.highlight == name:
+                (self.highlightBox.x,
+                 self.highlightBox.y,
+                 self.highlightBox.z) = self.project(0,0,0)
+            if thing.getObjectId() in self.textBoxes:
+                box = self.textBoxes[thing.getObjectId()]
+                (box.x,box.y,box.z) = self.project(0,0,0)
+            glRotatef(thing.getBearing() * 180 / math.pi, 0, 0, 1)
+
+            self.solidColourOn()
+            try:
+                if name in self.selected:
+                    self.glColorf((0.15, 0.9, 0.15, 0.95))
+                elif self.highlight == name:
+                    self.glColorf((0.1, 0.1, 1.0, 0.9))
+                else:
+                    self.glColorf((0.95, 0.55, 0.1, 0.85))
+
+                glLineWidth(2.0 if (name in self.selected or self.highlight == name) else 1.0)
+                glBegin(GL_LINE_LOOP)
+                for point_x, point_y, point_z in points:
+                    glVertex3f(point_x, point_y, point_z + 0.05)
+                glEnd()
+                glLineWidth(1.0)
+
+                self.glColorf((1.0, 0.9, 0.2, 1.0))
+                glBegin(GL_LINES)
+                glVertex3f(-0.3, 0.0, 0.06)
+                glVertex3f(0.3, 0.0, 0.06)
+                glVertex3f(0.0, -0.3, 0.06)
+                glVertex3f(0.0, 0.3, 0.06)
+                glEnd()
+            finally:
+                self.solidColourOff()
+        finally:
+            glPopMatrix()
 
     def _drawSoundThing(self, thing, name):
         radius = max(0.25, float(thing.getRadius()))
@@ -2563,7 +3171,12 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
             h = self.area.getHeight()*10.0
 
             name = 0
+            toon_active = False
+            if self.toonShading:
+                toon_active = self._toon_use()
             self.drawTree()
+            if toon_active:
+                self._toon_unuse()
             self._drawWaypointPaths()
             self._draw2DGridAndPaintOverlay()
 

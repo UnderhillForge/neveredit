@@ -42,6 +42,13 @@ class Trigger(LocatedNeverData):
         LocatedNeverData.__init__(self)
         self.addPropList('main',self.triggerPropList,gffEntry)
 
+    def getDescription(self):
+        tag = self['Tag'] or ''
+        name = self.getName() or 'Trigger'
+        if tag:
+            return 'Name: ' + name + '\nTag: ' + str(tag)
+        return 'Name: ' + name
+
     def getPortrait(self,size):
         if self['Portrait']:
             name = self['Portrait'].lower() + size + '.tga'
@@ -56,13 +63,24 @@ class Trigger(LocatedNeverData):
                                   + size + '.tga')
 
     def getName(self):
-        return self.gffstructDict['main'].getInterpretedEntry('LocalizedName').getString()
+        loc_name = self.gffstructDict['main'].getInterpretedEntry('LocalizedName')
+        if loc_name:
+            try:
+                name = loc_name.getString()
+                if name:
+                    return name
+            except Exception:
+                pass
+        tag = self['Tag']
+        if tag:
+            return str(tag)
+        return 'Trigger'
 
     def clone(self):
         gff = self.getGFFStruct('main').clone()
         return self.__class__(gff)
 
-    def getModel(self):
+    def getModel(self,copy=False):
         return None
 
 class TriggerBP(Trigger):
@@ -87,13 +105,23 @@ class TriggerBP(Trigger):
         gff.add('ZPosition',0.0,'FLOAT')
         gff.add('XOrientation',0.0,'FLOAT')
         gff.add('YOrientation',0.0,'FLOAT')
+        if not gff.hasEntry('Geometry'):
+            gff.add('Geometry',[],'List')
 
         gff.setType(TriggerInstance.GFF_STRUCT_ID)
-        
-        return TriggerInstance(gff)
+
+        instance = TriggerInstance(gff)
+        instance.ensureDefaultGeometry()
+        return instance
 
 class TriggerInstance(Trigger,NeverInstance):
     GFF_STRUCT_ID = 1
+    DEFAULT_GEOMETRY_POINTS = [
+        (-1.5, -1.5, 0.0),
+        (1.5, -1.5, 0.0),
+        (1.5, 1.5, 0.0),
+        (-1.5, 1.5, 0.0),
+    ]
     triggerInstancePropList = {
         'Geometry': 'Hidden',
         'TemplateResRef': 'ResRef,UTT',
@@ -111,6 +139,35 @@ class TriggerInstance(Trigger,NeverInstance):
                            + " should be " + repr(TriggerInstance.GFF_STRUCT_ID))
         Trigger.__init__(self,gffEntry)
         self.addPropList('instance',self.triggerInstancePropList,gffEntry)
+
+    def _ensureGeometryList(self):
+        gff = self.getMainGFFStruct()
+        geometry = self['Geometry']
+        if geometry is not None:
+            return geometry
+        if gff.hasEntry('Geometry'):
+            self['Geometry'] = []
+        else:
+            gff.add('Geometry', [], 'List')
+        geometry = self['Geometry']
+        if geometry is None:
+            geometry = []
+            self['Geometry'] = geometry
+        return geometry
+
+    def ensureDefaultGeometry(self):
+        geometry = self._ensureGeometryList()
+        if geometry:
+            return
+        for point in self.DEFAULT_GEOMETRY_POINTS:
+            self.addPoint(*point)
+
+    def getGeometryPoints(self):
+        geometry = self['Geometry'] or []
+        points = []
+        for pointStruct in geometry:
+            points.append(triggerPoint(pointStruct))
+        return points
 
 
     def getX(self):
@@ -152,9 +209,12 @@ class TriggerInstance(Trigger,NeverInstance):
             pointStruct = self['Geometry'][n]
         except ValueError:
             return None
+        except (TypeError, IndexError):
+            return None
         return triggerPoint(pointStruct)
 
     def addPoint(self,X,Y,Z):
+        self._ensureGeometryList()
         s = GFFStruct()
         s.add('PointX',X,"FLOAT")
         s.add('PointY',Y,"FLOAT")
@@ -188,6 +248,6 @@ class triggerPoint(NeverData):
         return self.getX(),self.getY(),self.getZ()
 
     def setCoordinates(self,X,Y,Z):
-        self['pointX'] = X
-        self['pointY'] = Y
-        self['pointZ'] = Z
+        self['PointX'] = X
+        self['PointY'] = Y
+        self['PointZ'] = Z
