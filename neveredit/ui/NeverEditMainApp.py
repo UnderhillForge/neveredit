@@ -85,6 +85,13 @@ class NeverEditMainWindow(wx.Frame,PropertyChangeListener):
     </td><td align="right" valign="top">
     <img src="neveredit.jpg"></td></tr></table>
 
+    <p>I've successfully updated the code to Python3. NWM/MODs currently load, 
+3d mapping is functional but needs improvement. I kept wxPython for the 
+interface and have tested only on MacOS and Debian with KDE. Currently 
+working on rendering fidelity/parity with NWN:EE. The primary goal for 
+this project is to provide a much needed NWN Toolset for those who 
+are on Linux/MacOS. -mrunderhill</p>
+
     <p>Welcome to neveredit. Neveredit strives to be an editor for files
     from the Bioware game Neverwinter Nights. One day it may have all of
     the functionality of the Bioware windows tools, and maybe more. For
