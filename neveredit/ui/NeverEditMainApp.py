@@ -39,14 +39,15 @@ from neveredit.ui import MapWindow
 from neveredit.ui import ConversationWindow
 from neveredit.ui import ModelWindow
 from neveredit.ui import ScriptEditor
-from neveredit.ui import PropWindow
 from neveredit.ui import HelpViewer
 from neveredit.ui import ToolPalette
 from neveredit.ui import PreferencesDialog
 from neveredit.ui import Notebook
 from neveredit.ui import PropertiesDialogs
 from neveredit.ui import SoundControl
+from neveredit.ui import WxUtils
 from neveredit.ui.FactionGridWindow import FactionGridWindow,FactionGrid
+from neveredit.ui.ShaderWindow import ShaderWindow
 from neveredit.util import Preferences
 from neveredit.util import Utils
 from neveredit.util import neverglobals
@@ -164,6 +165,8 @@ class NeverEditMainWindow(wx.Frame,PropertyChangeListener):
         self.detachedMap = {}
 
         self.threadAlive = False
+        self._restoringWindowState = False
+        self._windowStates = {}
     
         self.selectThisItem = None
         
@@ -176,11 +179,15 @@ class NeverEditMainWindow(wx.Frame,PropertyChangeListener):
                 
         splitter_style = getattr(wx, 'NO_3D', 0) | getattr(wx, 'SP_3D', 0)
         splitter = wx.SplitterWindow(self,-1,style=splitter_style)
+        self.splitter = splitter
         
         tID = wx.NewId()
         self.tree = wx.TreeCtrl(splitter,tID,wx.DefaultPosition,\
                                wx.DefaultSize,\
                                wx.TR_HAS_BUTTONS)
+        # Apply dark-mode-aware colors to tree control
+        self.tree.SetBackgroundColour(WxUtils.getPanelBackgroundColour(self.tree))
+        self.tree.SetForegroundColour(WxUtils.getTextColour(self.tree))
         self.selectedTreeItem = None
         self.lastAreaItem = None
         
@@ -212,6 +219,7 @@ class NeverEditMainWindow(wx.Frame,PropertyChangeListener):
 
         self.toolPalette = None
         self.props = None
+        self.shaderWindow = None
         
         self.setupMenus()
         
@@ -220,6 +228,7 @@ class NeverEditMainWindow(wx.Frame,PropertyChangeListener):
         self.scriptEditorFrame.SetSize(self._scale_size(900,650))
         self.scriptEditor.setHelpViewer(self.helpviewer)
         ScriptEditor.EVT_SCRIPTADD(self.scriptEditor,self.OnScriptAdded)
+        self.scriptEditorFrame._restored_state = False
 
         self.showScriptEditorFix = False
 
@@ -238,6 +247,7 @@ class NeverEditMainWindow(wx.Frame,PropertyChangeListener):
         self.Bind(wx.EVT_IDLE, self.idle)
         self.Bind(wx.EVT_CLOSE, self.OnClose)
         self.Bind(wx.EVT_SIZE, self.OnSize)
+        self.Bind(wx.EVT_MOVE, self.OnMove)
 
         tmp = self.splash
         self.splash = MySplashScreen(neveredit_logo_init_jpg.getBitmap())
@@ -264,6 +274,7 @@ class NeverEditMainWindow(wx.Frame,PropertyChangeListener):
             dlg.ShowModal()
             dlg.Destroy()
             self.Show(True)
+            self._restorePersistedWindowState()
         else:
             self.Enable(False)
             self.SetStatusText(_("Initializing from NWN Application Directory..."))
@@ -294,26 +305,100 @@ class NeverEditMainWindow(wx.Frame,PropertyChangeListener):
     def setStatus(self,s):
         '''Implementing the progress display interface'''
         self.SetStatusText(s)
-        wx.YieldIfNeeded()
+        # Do NOT call wx.YieldIfNeeded() here.  setStatus() is called from
+        # MapWindow.preprocess(), which runs inside a DrawGLScene() paint
+        # handler.  Pumping the event loop from within a paint callback allows
+        # stale wx.Timer objects to fire against already-freed C++ event
+        # handlers (wxEvtHandler PAC fault / SIGSEGV on ARM).  Status-bar text
+        # is cosmetic; the display will refresh at the next natural event loop
+        # iteration without an explicit yield.
         
     def showScriptEditor(self):
         self.scriptEditorFrame.Show(True)
+        if not self.scriptEditorFrame._restored_state:
+            self._restoreWindowState(self.scriptEditorFrame, 'ScriptEditorState', self._scale_size(520, 360))
+            self._trackWindowState(self.scriptEditorFrame, 'ScriptEditorState', self._scale_size(520, 360))
+            self.scriptEditorFrame._restored_state = True
         self.scriptEditorFrame.Raise()
 
     def showToolPalette(self):
         if not self.toolPalette:
             self.toolPalette = ToolPalette.ToolFrame()
+            self.toolPalette._restored_state = False
             self.toolPalette.GetToolBar().Enable(False)
             self._apply_font_delta(self.toolPalette, self.uiFontDelta)
             self.Bind(wx.EVT_CLOSE,self.OnCloseToolPalette,self.toolPalette)
+        self.toolPalette.Show(True)
+        if not self.toolPalette._restored_state:
+            self._restoreWindowState(self.toolPalette, 'ToolPaletteState', (220, 320))
+            self._trackWindowState(self.toolPalette, 'ToolPaletteState', (220, 320))
+            self.toolPalette._restored_state = True
             if self.map:
                 ToolPalette.EVT_TOOLSELECTION(self.toolPalette,
                                               self.map.toolSelected)
-        self.toolPalette.Show(True)
+        self.toolPalette.Raise()
+
+    def showShaderWindow(self):
+        if not self.shaderWindow:
+            self.shaderWindow = ShaderWindow(self)
+            self.shaderWindow._restored_state = False
+            self._apply_font_delta(self.shaderWindow, self.uiFontDelta)
+            self.shaderWindow.Bind(wx.EVT_CLOSE, self.OnCloseShaderWindow)
+        self._connectShaderWindow()
+        self.shaderWindow.Show(True)
+        if not self.shaderWindow._restored_state:
+            self._restoreWindowState(self.shaderWindow, 'ShaderWindowState', (340, 520))
+            self._trackWindowState(self.shaderWindow, 'ShaderWindowState', (340, 520))
+            self.shaderWindow._restored_state = True
+        self.shaderWindow.Raise()
+
+    def _connectShaderWindow(self):
+        if not self.shaderWindow:
+            return
+        shader_manager = None
+        if self.map and hasattr(self.map, 'shader_manager'):
+            shader_manager = self.map.shader_manager
+        self.shaderWindow.set_shader_manager(shader_manager)
+        self.shaderWindow.set_on_shader_changed_callback(self._onShaderSettingsChanged)
+
+    def _applyShaderPreferences(self, shader_manager=None):
+        if shader_manager is None:
+            if not self.map or not hasattr(self.map, 'shader_manager'):
+                return
+            shader_manager = self.map.shader_manager
+        shader_manager.configure(
+            enabled_shaders=self.prefs['EnabledShaders'],
+            current_shader=self.prefs['CurrentShader'],
+            parameter_values=self.prefs['ShaderParameters'],
+        )
+
+    def _rememberShaderPreferences(self):
+        if not self.map or not hasattr(self.map, 'shader_manager'):
+            return
+        state = self.map.shader_manager.serialize_state()
+        self.prefs['EnabledShaders'] = [key for key in state['enabled_shaders'] if key != 'None']
+        self.prefs['CurrentShader'] = state['current_shader']
+        self.prefs['ShaderParameters'] = state['parameter_values']
+
+    def _onShaderSettingsChanged(self, _shader_key=None):
+        self._rememberShaderPreferences()
+        if self.map:
+            self.map.redrawRequested = True
+            try:
+                self.map.Refresh(False)
+            except Exception:
+                pass
+    
+    def OnCloseShaderWindow(self, event):
+        if self.shaderWindow:
+            self.shaderWindow.Show(False)
+        if event and event.CanVeto():
+            event.Veto()
 
     def setupMenus(self):
         '''set up the app menu bar'''
         self.ID_ABOUT = wx.NewId()
+        self.ID_NEW_MODULE = wx.NewId()
         self.ID_OPEN  = wx.NewId()
         self.ID_SAVE  = wx.NewId()
         self.ID_SAVEAS = wx.NewId()
@@ -327,6 +412,7 @@ class NeverEditMainWindow(wx.Frame,PropertyChangeListener):
         self.ID_MAP_LAYER_WINDOW_MITEM = wx.NewId()
         self.ID_SCRIPT_WINDOW_MITEM = wx.NewId()
         self.ID_MAIN_WINDOW_MITEM = wx.NewId()
+        self.ID_SHADER_WINDOW_MITEM = wx.NewId()
         self.ID_CUT = wx.NewId()
         self.ID_COPY = wx.NewId()
         self.ID_PASTE = wx.NewId()
@@ -350,6 +436,8 @@ class NeverEditMainWindow(wx.Frame,PropertyChangeListener):
 
         #menus
         self.filemenu = wx.Menu()
+        self.filemenu.Append(self.ID_NEW_MODULE, '&' + _('New Module...') + '\tCtrl+N',
+                     _('Create a new blank module'))
         self.filemenu.Append(self.ID_OPEN, '&' + _('Open') + '\tCtrl+O',
                              _("Open a File"))
         self.filemenu.Append(self.ID_ADD_ERF, _('Add in ERF File...'),
@@ -407,12 +495,16 @@ class NeverEditMainWindow(wx.Frame,PropertyChangeListener):
         self.windowmenu.Append(self.ID_MAP_LAYER_WINDOW_MITEM, _('Map Layer'))
         self.windowmenu.Append(self.ID_PALETTE_WINDOW_MITEM, _('Palette Window'))
         self.windowmenu.Append(self.ID_SCRIPT_WINDOW_MITEM, _('Script Editor'))
+        self.windowmenu.Append(self.ID_SHADER_WINDOW_MITEM, _('Shaders'))
 
         self.toolsmenu = wx.Menu()
         self.toolsmenu.Append(self.ID_BUILD_MODULE, _('Build Module'),
                       _('Compile and validate module resources (placeholder)'))
         self.toolsmenu.Append(self.ID_TEST_MODULE, _('Test Module\tF9'),
                       _('Launch module test workflow (placeholder)'))
+        self.toolsmenu.AppendSeparator()
+        self.toolsmenu.Append(self.ID_SHADER_WINDOW_MITEM, _('Shaders...'),
+                  _('Open the shader selection window'))
         
         helpmenu = wx.Menu()
         helpmenu.Append(self.ID_ABOUT, '&' + _('About...'), _("About neveredit"))
@@ -427,6 +519,7 @@ class NeverEditMainWindow(wx.Frame,PropertyChangeListener):
         self.SetMenuBar(menuBar)
 
         self.Bind(wx.EVT_MENU, self.openFile, id=self.ID_OPEN)
+        self.Bind(wx.EVT_MENU, self.OnNewModule, id=self.ID_NEW_MODULE)
         self.Bind(wx.EVT_MENU, self.addERFFile, id=self.ID_ADD_ERF)
         self.Bind(wx.EVT_MENU, self.addResourceFile, id=self.ID_ADD_RESOURCE)
         self.Bind(wx.EVT_MENU, self.saveFile, id=self.ID_SAVE)
@@ -444,6 +537,7 @@ class NeverEditMainWindow(wx.Frame,PropertyChangeListener):
         self.Bind(wx.EVT_MENU, self.windowMenu, id=self.ID_MAP_LAYER_WINDOW_MITEM)
         self.Bind(wx.EVT_MENU, self.windowMenu, id=self.ID_SCRIPT_WINDOW_MITEM)
         self.Bind(wx.EVT_MENU, self.windowMenu, id=self.ID_PALETTE_WINDOW_MITEM)
+        self.Bind(wx.EVT_MENU, self.windowMenu, id=self.ID_SHADER_WINDOW_MITEM)
         
         #wx.EVT_MENU(self,self.ID_DETACH,self.OnDetach)
 
@@ -541,12 +635,6 @@ class NeverEditMainWindow(wx.Frame,PropertyChangeListener):
 
         wx.TheClipboard.Close()
         
-    def makePropPage(self):
-        '''Initialize the static controls for the properties notebook page.'''
-        self.props = PropWindow.PropWindow(self.notebook)
-        self.props.mainAppWindow = self
-        self.notebook.AddPage(self.props, _("Properties"), 'props')
-
     def treeFromERF(self):
         '''Make a new tree control from the erf file currently
         associated with the app. Does so in a new thread.'''
@@ -554,6 +642,7 @@ class NeverEditMainWindow(wx.Frame,PropertyChangeListener):
         self.tree.DeleteAllItems()
         self.treeRoot = self.tree.AddRoot(self.module.getName())
         self.tree.SetItemData(self.treeRoot,self.module)
+        self._applyTreeItemStyle(self.treeRoot)
         wx.BeginBusyCursor()
         self.doTreeFromERF()
         self.treeFromERFDone()
@@ -577,8 +666,16 @@ class NeverEditMainWindow(wx.Frame,PropertyChangeListener):
     def treeFromERFDone(self):
         '''This gets called when we finish loading a new ERF file.
         It gets the interface into its final state and cleans up a bit.'''
+        # Once a module is loaded, keep the notebook focused on editing pages.
+        if self.notebook.getPageByTag('welcome'):
+            self.notebook.deletePageByTag('welcome')
+        if self.notebook.getPageByTag('props'):
+            self.notebook.deletePageByTag('props')
+        self.props = None
+
         self.setStatus("Preparing user interface...")
         self.areaRoot = self.tree.AppendItem(self.treeRoot,'Areas')
+        self._applyTreeItemStyle(self.areaRoot)
         area_values = list(self.areas.values())
         area_total = len(area_values)
         area_start = time.time()
@@ -629,6 +726,11 @@ class NeverEditMainWindow(wx.Frame,PropertyChangeListener):
         rect = self.GetStatusBar().GetFieldRect(1)
         self.statusProgress.SetPosition((rect.x+1,rect.y+1))
         self.statusProgress.SetSize((rect.width-2,rect.height-2))
+        self._rememberWindowState(self, 'MainWindowState')
+        event.Skip()
+
+    def OnMove(self,event):
+        self._rememberWindowState(self, 'MainWindowState')
         event.Skip()
 
     def addScripts(self):
@@ -736,6 +838,7 @@ class NeverEditMainWindow(wx.Frame,PropertyChangeListener):
                 self.splash.Destroy()
             self.showToolPalette()
             self.Show(True)
+            self._restorePersistedWindowState()
             self.Enable(True)
             self.SetStatusText(_("Welcome to neveredit..."))
             self.RMThread = None
@@ -815,88 +918,97 @@ class NeverEditMainWindow(wx.Frame,PropertyChangeListener):
         areaItem = self.tree.AppendItem(item,area.getName())
         self.tree.SetItemHasChildren(areaItem,True)
         self.tree.SetItemData(areaItem,area)
+        self._applyTreeItemStyle(areaItem)
+        return areaItem
 
     def addUnsupportedAreaCategory(self, areaItem, label):
         categoryItem = self.tree.AppendItem(areaItem, label)
+        self._applyTreeItemStyle(categoryItem)
         noteItem = self.tree.AppendItem(categoryItem, _('(Not yet supported)'))
-        self.tree.SetItemTextColour(noteItem, wx.Colour(128, 128, 128))
+        self.tree.SetItemTextColour(noteItem, WxUtils.getMutedTextColour(self.tree))
         self.tree.Expand(categoryItem)
+
+    def _safeTreeLabel(self, thing, fallbackLabel):
+        label = ''
+        try:
+            label = thing.getName()
+        except Exception:
+            logger.exception('failed to get tree label from %s', repr(thing))
+
+        if isinstance(label, bytes):
+            label = label.decode('latin1', 'ignore')
+        if label is None:
+            label = ''
+        label = str(label).split('\0', 1)[0].strip()
+        if label:
+            return label
+
+        for key in ('Tag', 'TemplateResRef'):
+            value = None
+            try:
+                value = thing[key]
+            except Exception:
+                value = None
+            if isinstance(value, bytes):
+                value = value.decode('latin1', 'ignore')
+            if value is None:
+                continue
+            value = str(value).split('\0', 1)[0].strip()
+            if value and value not in ('****', 'NULL'):
+                return value
+
+        object_id = None
+        try:
+            object_id = thing.getObjectId()
+        except Exception:
+            object_id = None
+        if object_id is not None:
+            return '%s #%s' % (fallbackLabel, str(object_id))
+
+        return fallbackLabel
+
+    def _applyTreeItemStyle(self, item):
+        """Apply dark-mode-aware styling to a tree item."""
+        try:
+            self.tree.SetItemTextColour(item, WxUtils.getTextColour(self.tree))
+        except Exception:
+            pass
+
+    def _appendAreaCategory(self, areaItem, categoryLabel, things, fallbackLabel):
+        if not things:
+            return
+        parentItem = self.tree.AppendItem(areaItem, categoryLabel)
+        self._applyTreeItemStyle(parentItem)
+        for thing in things:
+            label = self._safeTreeLabel(thing, fallbackLabel)
+            thingItem = self.tree.AppendItem(parentItem, label)
+            self._applyTreeItemStyle(thingItem)
+            self.tree.SetItemData(thingItem, thing)
+            try:
+                self.idToTreeItemMap[thing.getNevereditId()] = thingItem
+            except Exception:
+                logger.exception('failed to index tree item for %s', repr(thing))
         
     def subtreeFromArea(self,areaItem,area):
         '''Create a new subtree for a module area.'''
-        doors = area.getDoors()
-        if len(doors) > 0:
-            doorParentItem = self.tree.AppendItem(areaItem,_('Doors'))
-            for door in doors:
-                doorItem = self.tree.AppendItem(doorParentItem,
-                                                door.getName())
-                self.tree.SetItemData(doorItem,door)
-                self.idToTreeItemMap[door.getNevereditId()] = doorItem
-            
-        placeables = area.getPlaceables()
-        if len(placeables) > 0:
-            placeableParentItem = self.tree.AppendItem(areaItem,
-                                                       _('Placeables'))
-            for placeable in placeables:
-                placeableItem = self.tree.AppendItem(placeableParentItem,
-                                                     placeable.getName())
-                self.tree.SetItemData(placeableItem,placeable)
-                self.idToTreeItemMap[placeable.getNevereditId()] = placeableItem
-
-        creatures = area.getCreatures()
-        if len(creatures) > 0:
-            creatureParentItem = self.tree.AppendItem(areaItem,
-                                                      _('Creatures'))
-            for creature in creatures:
-                creatureItem = self.tree.AppendItem(creatureParentItem,
-                                                    creature.getName())
-                self.tree.SetItemData(creatureItem,creature)
-                self.idToTreeItemMap[creature.getNevereditId()] = creatureItem
-        
-        items = area.getItems()
-        if len(items) > 0:
-            itemParentItem = self.tree.AppendItem(areaItem,_('Items'))
-            for item in items:
-                itemItem = self.tree.AppendItem(itemParentItem,
-                                                item.getName())
-                self.tree.SetItemData(itemItem,item)
-                self.idToTreeItemMap[item.getNevereditId()] = itemItem
-
-        waypoints = area.getWayPoints()
-        if len(waypoints)>0:
-            waypointParentItem = self.tree.AppendItem(areaItem,_('WayPoints'))
-            for waypoint in waypoints:
-                waypointItem = self.tree.AppendItem(waypointParentItem,
-                                                waypoint.getName())
-                self.tree.SetItemData(waypointItem,waypoint)
-                self.idToTreeItemMap[waypoint.getNevereditId()] = waypointItem
-
-        sounds = area.getSounds()
-        if len(sounds) > 0:
-            soundParentItem = self.tree.AppendItem(areaItem, _('Sounds'))
-            for sound in sounds:
-                soundItem = self.tree.AppendItem(soundParentItem,
-                                                 sound.getName())
-                self.tree.SetItemData(soundItem, sound)
-                self.idToTreeItemMap[sound.getNevereditId()] = soundItem
-
-        triggers = area.getTriggers()
-        if len(triggers) > 0:
-            triggerParentItem = self.tree.AppendItem(areaItem, _('Triggers'))
-            for trigger in triggers:
-                triggerItem = self.tree.AppendItem(triggerParentItem,
-                                                   trigger.getName())
-                self.tree.SetItemData(triggerItem, trigger)
-                self.idToTreeItemMap[trigger.getNevereditId()] = triggerItem
-
-        encounters = area.getEncounters()
-        if len(encounters) > 0:
-            encounterParentItem = self.tree.AppendItem(areaItem, _('Encounters'))
-            for encounter in encounters:
-                encounterItem = self.tree.AppendItem(encounterParentItem,
-                                                     encounter.getName())
-                self.tree.SetItemData(encounterItem, encounter)
-                self.idToTreeItemMap[encounter.getNevereditId()] = encounterItem
+        self.tree.DeleteChildren(areaItem)
+        categories = [
+            (_('Doors'), area.getDoors, _('Door')),
+            (_('Placeables'), area.getPlaceables, _('Placeable')),
+            (_('Creatures'), area.getCreatures, _('Creature')),
+            (_('Items'), area.getItems, _('Item')),
+            (_('WayPoints'), area.getWayPoints, _('Waypoint')),
+            (_('Sounds'), area.getSounds, _('Sound')),
+            (_('Triggers'), area.getTriggers, _('Trigger')),
+            (_('Encounters'), area.getEncounters, _('Encounter')),
+        ]
+        for categoryLabel, getter, fallbackLabel in categories:
+            try:
+                things = getter()
+            except Exception:
+                logger.exception('failed to read area category %s for %s', categoryLabel, area.getName())
+                continue
+            self._appendAreaCategory(areaItem, categoryLabel, things, fallbackLabel)
 
     def isAreaItem(self,item):
         data = self.tree.GetItemData(item)
@@ -979,9 +1091,7 @@ class NeverEditMainWindow(wx.Frame,PropertyChangeListener):
         self.notebook.SetEvtHandlerEnabled(False)
         if self.toolPalette:
             self.toolPalette.GetToolBar().Enable(False)
-        if tag == 'props':
-            self.props.makePropsForItem(data,self)
-        elif tag == 'map':
+        if tag == 'map':
             self.map.setArea(area)
             MapWindow.EVT_MAPSINGLESELECTION(self.map,
                                              self.OnMapSelection)
@@ -1012,11 +1122,6 @@ class NeverEditMainWindow(wx.Frame,PropertyChangeListener):
             return
         data = self.tree.GetItemData(self.selectedTreeItem)
         notebookSelection = self.notebook.GetSelection()
-        if hasattr(data,'iterateProperties') and\
-               not self.notebook.getPageByTag('props'):
-            self.makePropPage()
-        elif not hasattr(data,'iterateProperties'):
-            self.notebook.deletePageByTag('props')
         area = self.getAreaForTreeItem(self.selectedTreeItem)
         self.editmenu.Enable(self.ID_AREA_PROPS, bool(area))
         oldArea = self.getAreaForTreeItem(lastItem)
@@ -1028,9 +1133,13 @@ class NeverEditMainWindow(wx.Frame,PropertyChangeListener):
             self.map = MapWindow.MapWindow(self.notebook)
             self.notebook.AddPage(self.map, _('Map'), 'map')
             self.map.setProgressDisplay(self)
+            self._applyShaderPreferences(self.map.shader_manager)
+            self._connectShaderWindow()
         elif not area and self.notebook.getPageByTag('map'):
             self.map.setArea(None)
             self.notebook.deletePageByTag('map')
+            self.map = None
+            self._connectShaderWindow()
         if area and self.toolPalette:
             self.toolPalette.toggleToolOn(ToolPalette.SELECTION_TOOL)
         
@@ -1072,12 +1181,14 @@ class NeverEditMainWindow(wx.Frame,PropertyChangeListener):
         else:
             self.notebook.deletePageByTag('conversation')
             self.notebook.deletePageByTag('factions')
-                    
-        if notebookSelection < self.notebook.GetPageCount() and\
-               not notebookSelection == self.notebook.getPageInfoByTag('welcome')[0]:
+
+        page_count = self.notebook.GetPageCount()
+        if page_count > 0 and notebookSelection >= 0 and notebookSelection < page_count:
             self.notebook.SetSelection(notebookSelection)
-        else:
-            self.notebook.selectPageByTag('props')
+        elif self.notebook.getPageByTag('map'):
+            self.notebook.selectPageByTag('map')
+        elif page_count > 0:
+            self.notebook.SetSelection(0)
 
         self.notebook.setSyncAllPages(True)
         self.syncDisplayedPage()
@@ -1148,14 +1259,71 @@ Copyright 2003-2006'''),
             return True
 
     def OnCloseToolPalette(self,event):
+        if self.toolPalette:
+            self._rememberWindowState(self.toolPalette, 'ToolPaletteState')
         self.toolPalette = None
+        event.Skip()
         
     def OnCloseSplash(self,event):
         self.splash = None
 
     def OnCloseWindow(self,event):
+        self._rememberWindowState(self.scriptEditorFrame, 'ScriptEditorState')
         self.scriptEditorFrame.Show(False)
         event.Veto()
+
+    def _trackWindowState(self, window, prefKey, minSize=None):
+        if not window:
+            return
+        window._neveredit_pref_key = prefKey
+        window._neveredit_min_size = minSize
+        window.Bind(wx.EVT_MOVE, self._onTrackedWindowGeometryEvent)
+        window.Bind(wx.EVT_SIZE, self._onTrackedWindowGeometryEvent)
+
+    def _onTrackedWindowGeometryEvent(self, event):
+        window = event.GetEventObject()
+        pref_key = getattr(window, '_neveredit_pref_key', None)
+        if pref_key:
+            self._rememberWindowState(window, pref_key)
+        event.Skip()
+
+    def _rememberWindowState(self, window, prefKey):
+        if self._restoringWindowState or not prefKey:
+            return
+        state = WxUtils.captureWindowState(window, self._windowStates.get(prefKey))
+        if state:
+            self._windowStates[prefKey] = state
+
+    def _restoreWindowState(self, window, prefKey, minSize=None):
+        from neveredit.util import plistlib
+        state = self.prefs[prefKey]
+        # Check for both dict and plistlib.Dict (custom dict wrapper from plist files)
+        if not isinstance(state, (dict, plistlib.Dict)):
+            state = None
+        self._windowStates[prefKey] = state
+        if not state:
+            import sys
+            print(f"[NeverEdit] No saved state for {prefKey}", file=sys.stderr)
+            return
+        import sys
+        print(f"[NeverEdit] Restoring {prefKey}: {state}", file=sys.stderr)
+        self._restoringWindowState = True
+        try:
+            WxUtils.applyWindowState(window, state, min_size=minSize)
+        finally:
+            self._restoringWindowState = False
+        self._rememberWindowState(window, prefKey)
+
+    def _restorePersistedWindowState(self):
+        self._restoreWindowState(self, 'MainWindowState', self._scale_size(750, 280))
+        # Note: Script editor state will be restored in showScriptEditor() 
+        # after the window is first shown, not here in __init__
+        sash = self.prefs['MainSplitterSashPosition']
+        if sash is not None:
+            try:
+                self.splitter.SetSashPosition(int(sash))
+            except Exception:
+                pass
         
     def _performShutdown(self):
         # Stop periodic callbacks before tearing down windows.
@@ -1165,8 +1333,31 @@ Copyright 2003-2006'''),
         except Exception:
             pass
 
+        # Unbind all event handlers from tool palette to prevent event callbacks
+        # from firing after window destruction
+        try:
+            if self.toolPalette:
+                self.toolPalette.Unbind(wx.EVT_TOOL)
+        except Exception:
+            pass
+
+        # Remember window states before closing, in case they haven't been captured yet.
+        self._rememberWindowState(self, 'MainWindowState')
+        self._rememberWindowState(self.scriptEditorFrame, 'ScriptEditorState')
+        try:
+            if self.toolPalette:
+                self._rememberWindowState(self.toolPalette, 'ToolPaletteState')
+        except Exception:
+            pass
+        try:
+            if self.shaderWindow:
+                self._rememberWindowState(self.shaderWindow, 'ShaderWindowState')
+        except Exception:
+            pass
+
         self.savePrefs()
 
+        # Destroy tool palette first (before map closes)
         try:
             if self.toolPalette:
                 self.toolPalette.Destroy()
@@ -1174,12 +1365,27 @@ Copyright 2003-2006'''),
         except Exception:
             pass
 
+        # Destroy script editor next
         try:
             if self.scriptEditorFrame:
                 self.scriptEditorFrame.Destroy()
         except Exception:
             pass
 
+        try:
+            if self.shaderWindow:
+                self.shaderWindow.Destroy()
+                self.shaderWindow = None
+        except Exception:
+            pass
+
+        # Process any pending events to prevent them from firing after destruction
+        try:
+            wx.SafeYield()
+        except Exception:
+            pass
+
+        # Finally destroy the main window
         self.Destroy()
         app = wx.GetApp()
         if app:
@@ -1226,6 +1432,10 @@ Copyright 2003-2006'''),
             self.toolPalette.Raise()
         elif id == self.ID_SCRIPT_WINDOW_MITEM:
             self.showScriptEditor()
+        elif id == self.ID_SHADER_WINDOW_MITEM:
+            self.showShaderWindow()
+            if self.shaderWindow:
+                self.shaderWindow.Raise()
             
     def exit(self,event):
         '''Exit the Main app, asking about possible unsaved changes.'''
@@ -1256,6 +1466,25 @@ Copyright 2003-2006'''),
 
     def OnAreaWizard(self, event):
         """Show the New Area wizard and add the area to the module on OK."""
+        self._runAreaWizard()
+
+    def _selectMapPageIfAvailable(self):
+        if self.notebook.getPageByTag('map'):
+            self.notebook.selectPageByTag('map')
+            self.syncDisplayedPage()
+
+    def _openAreaInViewer(self, area_item):
+        if not area_item or not area_item.IsOk():
+            return
+        self.tree.EnsureVisible(area_item)
+        self.tree.SelectItem(area_item)
+        if self.notebook.getPageByTag('map'):
+            self.notebook.selectPageByTag('map')
+            self.syncDisplayedPage()
+        else:
+            wx.CallAfter(self._selectMapPageIfAvailable)
+
+    def _runAreaWizard(self):
         from neveredit.ui import AreaWizard as _AreaWizardModule
         from neveredit.game.ResourceManager import ResourceManager as _RM
         module = getattr(self, 'module', None)
@@ -1283,12 +1512,73 @@ Copyright 2003-2006'''),
             wx.MessageBox('Failed to create area: %s' % str(exc),
                           'Error', wx.OK | wx.ICON_ERROR, self)
             return
+        area_item = None
         if hasattr(self, 'areaRoot') and self.areaRoot.IsOk():
-            self.makeAreaItem(self.areaRoot, area)
+            area_item = self.makeAreaItem(self.areaRoot, area)
             self.tree.Expand(self.areaRoot)
+
+        if results.get('launch_area_properties'):
+            if PropertiesDialogs.show_area_properties(self, area):
+                self.setFileChanged(True)
+
+        if results.get('open_area_viewer'):
+            self._openAreaInViewer(area_item)
+
         self.setFileChanged(True)
         self.SetStatusText('Created area "%s" (%s)' %
                            (results['name'], results['resref']))
+
+    def OnNewModule(self, event):
+        """Create a new blank module, then launch the Area Wizard."""
+        if not self.maybeSave():
+            return
+
+        name_dlg = wx.TextEntryDialog(
+            self,
+            _('Enter the name for the new module:'),
+            _('New Module'),
+            _('New Module'))
+        if name_dlg.ShowModal() != wx.ID_OK:
+            name_dlg.Destroy()
+            return
+        module_name = name_dlg.GetValue().strip()
+        name_dlg.Destroy()
+        if not module_name:
+            wx.MessageBox(_('Please enter a module name.'),
+                          _('Validation'), wx.OK | wx.ICON_WARNING, self)
+            return
+
+        try:
+            last_save_dir = self.prefs['LastSaveDir']
+        except Exception:
+            last_save_dir = os.path.join(self.prefs['NWNAppDir'], 'modules')
+
+        default_filename = Module.Module._sanitize_resref(module_name, fallback='module') + '.mod'
+        dlg = wx.FileDialog(
+            self,
+            _('Choose a .mod filename for the new module'),
+            last_save_dir,
+            default_filename,
+            'MOD|*.mod|' + _('All Files') + '|*.*',
+            wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT)
+        if dlg.ShowModal() != wx.ID_OK:
+            dlg.Destroy()
+            return
+        module_path = dlg.GetPath()
+        dlg.Destroy()
+        if not module_path.lower().endswith('.mod'):
+            module_path += '.mod'
+
+        try:
+            Module.Module.createBlankModuleFile(module_path, module_name)
+            self.doReadFile(module_path)
+        except Exception as exc:
+            wx.MessageBox(_('Failed to create module: %s') % str(exc),
+                          _('Error'), wx.OK | wx.ICON_ERROR, self)
+            return
+
+        self.SetStatusText(_('Created module "%s".') % module_name)
+        self._runAreaWizard()
 
 
     def OnAreaProperties(self, event):
@@ -1306,14 +1596,15 @@ Copyright 2003-2006'''),
         area = self.getAreaForTreeItem(item)
         if not self.isAreaItem(item) and not area:
             return
-        menu = wx.Menu()
-        props_id = wx.NewId()
+
+        # Resolve the area object (may come from area item directly or from a child)
         if self.isAreaItem(item):
             area = self.tree.GetItemData(item)
-            label = _('Area Properties...')
-        else:
-            label = _('Area Properties...')
-        menu.Append(props_id, label)
+
+        menu = wx.Menu()
+
+        props_id = wx.NewId()
+        menu.Append(props_id, _('Area Properties...'))
         if area:
             def _on_props(evt, _area=area):
                 if PropertiesDialogs.show_area_properties(self, _area):
@@ -1321,8 +1612,62 @@ Copyright 2003-2006'''),
             self.Bind(wx.EVT_MENU, _on_props, id=props_id)
         else:
             menu.Enable(props_id, False)
+
+        menu.AppendSeparator()
+
+        export_id = wx.NewId()
+        menu.Append(export_id, _('Export Area for Godot...'))
+        if area:
+            def _on_export(evt, _area=area):
+                self._onExportAreaForGodot(_area)
+            self.Bind(wx.EVT_MENU, _on_export, id=export_id)
+        else:
+            menu.Enable(export_id, False)
+
         self.tree.PopupMenu(menu)
         menu.Destroy()
+
+    def _onExportAreaForGodot(self, area):
+        """Export *area* (doors, placeables, creatures, sounds) to Godot glTF format."""
+        from neveredit.util import godot_area_export
+        from neveredit.util.godot_area_export import BASE_DATA_DIR
+
+        area_label = area.getName() or area.name or 'area'
+        dlg = wx.MessageDialog(
+            self,
+            _('Export area "%s" for Godot?\n\nOutput will be written to:\n%s') % (
+                area_label,
+                os.path.join(BASE_DATA_DIR, godot_area_export._safe_dir_name(area.name or area_label))),
+            _('Export Area for Godot'),
+            wx.OK | wx.CANCEL | wx.ICON_INFORMATION)
+        if dlg.ShowModal() != wx.ID_OK:
+            dlg.Destroy()
+            return
+        dlg.Destroy()
+
+        self.SetStatusText(_('Exporting area "%s" for Godot...') % area_label)
+        try:
+            result = godot_area_export.export_area(
+                area,
+                progress_callback=self.SetStatusText)
+        except Exception as exc:
+            logger.exception('Godot area export failed for %s', area_label)
+            wx.MessageDialog(
+                self,
+                _('Export failed:\n%s') % str(exc),
+                _('Export Error'),
+                wx.OK | wx.ICON_ERROR).ShowModal()
+            self.SetStatusText(_('Export failed for "%s".') % area_label)
+            return
+
+        msg = _('Exported "%s": %d model(s), %d sound(s)\n→ %s') % (
+            area_label,
+            result['gltf_count'],
+            result['sound_count'],
+            result['output_dir'])
+        self.SetStatusText(_('Export complete: "%s"') % area_label)
+        wx.MessageDialog(self, msg, _('Export Complete'), wx.OK | wx.ICON_INFORMATION).ShowModal()
+
 
     def OnPreferences(self,event):
         '''Display a prefs dialog.'''
@@ -1343,6 +1688,21 @@ Copyright 2003-2006'''),
         for i in range(n):
             files.append(self.filehistory.GetHistoryFile(i))
         self.prefs['FileHistory'] = files
+        self._rememberWindowState(self, 'MainWindowState')
+        self._rememberWindowState(self.scriptEditorFrame, 'ScriptEditorState')
+        if self.toolPalette:
+            self._rememberWindowState(self.toolPalette, 'ToolPaletteState')
+        if self.shaderWindow:
+            self._rememberWindowState(self.shaderWindow, 'ShaderWindowState')
+        self.prefs['MainWindowState'] = self._windowStates.get('MainWindowState')
+        self.prefs['ScriptEditorState'] = self._windowStates.get('ScriptEditorState')
+        self.prefs['ToolPaletteState'] = self._windowStates.get('ToolPaletteState')
+        self.prefs['ShaderWindowState'] = self._windowStates.get('ShaderWindowState')
+        self._rememberShaderPreferences()
+        try:
+            self.prefs['MainSplitterSashPosition'] = int(self.splitter.GetSashPosition())
+        except Exception:
+            self.prefs['MainSplitterSashPosition'] = None
         self.prefs.save()
         
     def loadPrefs(self):

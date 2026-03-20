@@ -257,7 +257,7 @@ class PropWindow(scrolled.ScrolledPanel, ResourceListChangeListener):
             control.SetBackgroundColour(control._neveredit_default_bg)
         else:
             control.SetToolTip('Missing SSF resource: %s' % value)
-            control.SetBackgroundColour(wx.Colour(255, 220, 220))
+            control.SetBackgroundColour(WxUtils.getWarningBackgroundColour(control))
         control.Refresh()
     
     def makePropsForItem(self,item,observer=None):

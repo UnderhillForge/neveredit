@@ -16,6 +16,7 @@ import math
 import os
 import json
 import string
+import re
 Set = set
 import time
 import profile
@@ -183,6 +184,7 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
         self.placeables = None
         self.doors = None
         self.creatures = None
+        self.items = None
         self.encounters = None
         self.waypoints = None
         self.sounds = []
@@ -229,16 +231,21 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
         self.map2DShowOcclusion = True
 
         self.layerVisibility = {
-            'showTiles': True,
-            'showObjects': True,
-            'showAmbient': True,
             'showGrid': True,
+            'showCreatures': True,
+            'showDoors': True,
+            'showEncounters': True,
+            'showItems': True,
+            'showMerchants': True,
+            'showPlaceables': True,
+            'showSounds': True,
             'showWaypoints': True,
-            'showPaths': True,
+            'showStartLocation': True,
         }
         self.mapLayersWindowGeometry = None
         self.mapLayersWindowVisible = True
         self._loadLayerVisibility()
+        self.map2DShowGrid = bool(self.layerVisibility.get('showGrid', self.map2DShowGrid))
         self.mapLayersWindow = None
 
         self.Bind(wx.EVT_RIGHT_DOWN, self.OnRightMouseDown)
@@ -401,6 +408,7 @@ void main() {
         for key, value in list(layerState.items()):
             if key in self.layerVisibility:
                 self.layerVisibility[key] = bool(value)
+        self.map2DShowGrid = bool(self.layerVisibility.get('showGrid', self.map2DShowGrid))
         self._pruneSelectionForLayerVisibility()
         self._saveLayerVisibility()
         self.requestRedraw()
@@ -435,6 +443,7 @@ void main() {
                 return
             layer_payload = payload.get('layers', payload)
             if isinstance(layer_payload, dict):
+                self._migrateLegacyLayerVisibility(layer_payload)
                 for key in list(self.layerVisibility.keys()):
                     if key in layer_payload:
                         self.layerVisibility[key] = bool(layer_payload[key])
@@ -450,6 +459,21 @@ void main() {
                 self.mapLayersWindowVisible = bool(payload.get('mapLayersWindowVisible'))
         except Exception:
             logger.debug('failed to load map layer visibility settings', exc_info=True)
+
+    def _migrateLegacyLayerVisibility(self, layer_payload):
+        if not isinstance(layer_payload, dict):
+            return
+        if 'showAmbient' in layer_payload and 'showSounds' not in layer_payload:
+            layer_payload['showSounds'] = bool(layer_payload.get('showAmbient'))
+        if 'showWaypoints' in layer_payload and 'showStartLocation' not in layer_payload:
+            layer_payload['showStartLocation'] = bool(layer_payload.get('showWaypoints'))
+        if 'showObjects' in layer_payload:
+            objects_visible = bool(layer_payload.get('showObjects'))
+            for key in ('showCreatures', 'showDoors', 'showEncounters',
+                        'showItems', 'showMerchants', 'showPlaceables'):
+                layer_payload.setdefault(key, objects_visible)
+        if 'showGrid' not in layer_payload:
+            layer_payload['showGrid'] = True
 
     def _saveLayerVisibility(self):
         path = self._getLayerVisibilityPath()
@@ -957,6 +981,14 @@ void main() {
                     if radial <= radius and radial < closestIntersect:
                         toHighlight = id
                         closestIntersect = radial
+                elif self._canUseGenericThingMarker(thing):
+                    dx = thing.getX() - x
+                    dy = thing.getY() - y
+                    radial = math.sqrt(dx*dx + dy*dy)
+                    marker_radius = 0.8
+                    if radial <= marker_radius and radial < closestIntersect:
+                        toHighlight = id
+                        closestIntersect = radial
             if toHighlight != -1:
                 thing = self.fullThingList[toHighlight]
                 before = self.highlight
@@ -1111,6 +1143,10 @@ void main() {
                 return
             if key_char == 'g':
                 self.map2DShowGrid = not self.map2DShowGrid
+                self.layerVisibility['showGrid'] = self.map2DShowGrid
+                if self.mapLayersWindow is not None:
+                    self.mapLayersWindow.setLayers(self.layerVisibility)
+                self._saveLayerVisibility()
                 self.setStatus('2D grid: %s' % ('on' if self.map2DShowGrid else 'off'))
                 self.requestRedraw()
                 return
@@ -1297,6 +1333,20 @@ void main() {
             return
         self._missingModelWarnings.add(key)
         logger.warning('no model for %s (%s)' % (name, category))
+
+    def _getModelSafe(self, thing, category, want_copy=False):
+        """Return thing model, swallowing lookup exceptions so map rendering continues."""
+        try:
+            return thing.getModel(copy=want_copy)
+        except Exception as exc:
+            key = ('model-error', category, getattr(thing, 'getNevereditId', lambda: id(thing))())
+            if key not in self._missingModelWarnings:
+                self._missingModelWarnings.add(key)
+                logger.exception('model lookup failed for %s (%s): %s',
+                                 getattr(thing, 'getName', lambda: 'unknown')(),
+                                 category,
+                                 exc)
+            return None
 
     def lookAt(self,x,y):
         self.lookingAtX = x
@@ -1659,7 +1709,7 @@ void main() {
         self.setStatus("Preparing door display...")
         self.setProgress(10)
         for i,d in enumerate(self.doors):
-            model = d.getModel()
+            model = self._getModelSafe(d, 'door')
             if model:
                 if d.modelName not in self.preprocessedModels:
                     self.preprocessNodes(model,'d'+repr(i),bbox=True)
@@ -1672,7 +1722,7 @@ void main() {
         self.setProgress(30)
         self.setStatus("Preparing placeable display...")
         for i,p in enumerate(self.placeables):
-            model = p.getModel()
+            model = self._getModelSafe(p, 'placeable')
             if model:
                 if p.modelName not in self.preprocessedModels:
                     self.preprocessNodes(model,'p'+repr(i),bbox=True)
@@ -1685,8 +1735,9 @@ void main() {
         self.setProgress(50)
         self.setStatus("Preparing creature display...")
         for i,c in enumerate(self.creatures):
-            base_model = c.getModel()
+            base_model = self._getModelSafe(c, 'creature')
             if not base_model:
+                self._warnMissingModelOnce('creature', c.getName())
                 continue
 
             tint_context = self._getCreatureTintContext(c)
@@ -1698,7 +1749,7 @@ void main() {
             model = self.creatureModelVariants.get(variant_key)
             if model is None:
                 if tint_signature:
-                    model = c.getModel(copy=True)
+                    model = self._getModelSafe(c, 'creature', want_copy=True)
                 else:
                     model = base_model
                 if not model:
@@ -1727,7 +1778,7 @@ void main() {
         self.setProgress(70)
         self.setStatus("Preparing tile display...")
         for i,t in enumerate(self.tiles):
-            model = t.getModel()
+            model = self._getModelSafe(t, 'tile')
             if model:
                 if t.modelName not in self.preprocessedModels:
                     self.preprocessNodes(model,'t'+repr(i),bbox=True)
@@ -1740,7 +1791,7 @@ void main() {
         self.setProgress(90)
         self.setStatus("Preparing waypoint display...")
         for i,w in enumerate(self.waypoints):
-            model = w.getModel()
+            model = self._getModelSafe(w, 'waypoint')
             if model:
                 if w.modelName not in self.preprocessedModels:
                     self.preprocessNodes(model,'w'+repr(i),bbox=True)
@@ -1926,6 +1977,7 @@ void main() {
             self.placeables = None
             self.doors = None
             self.creatures = None
+            self.items = None
             self.encounters = None
             self.tiles = None
             self.triggers = None
@@ -1945,6 +1997,7 @@ void main() {
             self.placeables = area.getPlaceables()
             self.doors = area.getDoors()
             self.creatures = area.getCreatures()
+            self.items = area.getItems()
             self.tiles = area.getTiles()
             self.triggers = area.getTriggers()
             self.encounters = area.getEncounters()
@@ -1972,12 +2025,66 @@ void main() {
         self.fullThingList = ((self.doors or []) +
                               (self.placeables or []) +
                               (self.creatures or []) +
+                              (self.items or []) +
                               (self.triggers or []) +
                               (self.encounters or []) +
                               (self.waypoints or []) +
                               (self.sounds or []))
+        self.doorIdSet = Set([d.getNevereditId() for d in (self.doors or [])])
+        self.placeableIdSet = Set([p.getNevereditId() for p in (self.placeables or [])])
+        self.creatureIdSet = Set([c.getNevereditId() for c in (self.creatures or [])])
+        self.itemIdSet = Set([i.getNevereditId() for i in (self.items or [])])
+        self.merchantIdSet = Set([c.getNevereditId() for c in (self.creatures or [])
+                                  if self._looksLikeMerchant(c)])
+        self.triggerIdSet = Set([t.getNevereditId() for t in (self.triggers or [])])
+        self.encounterIdSet = Set([e.getNevereditId() for e in (self.encounters or [])])
         self.waypointIdSet = Set([w.getNevereditId() for w in (self.waypoints or [])])
+        self.startLocationIdSet = Set([w.getNevereditId() for w in (self.waypoints or [])
+                                       if self._looksLikeStartLocation(w)])
         self.soundIdSet = Set([s.getNevereditId() for s in (self.sounds or [])])
+
+    def _thingText(self, thing, key):
+        if not hasattr(thing, 'hasProperty'):
+            return ''
+        if not thing.hasProperty(key):
+            return ''
+        try:
+            value = thing[key]
+        except Exception:
+            return ''
+        if value is None:
+            return ''
+        if hasattr(value, 'getString'):
+            try:
+                value = value.getString()
+            except Exception:
+                value = ''
+        if isinstance(value, bytes):
+            value = value.decode('latin1', 'ignore')
+        return str(value).strip().strip('\0')
+
+    def _looksLikeMerchant(self, thing):
+        merged = ' '.join([
+            self._thingText(thing, 'Tag'),
+            self._thingText(thing, 'TemplateResRef'),
+            self._thingText(thing, 'Conversation'),
+            self._thingText(thing, 'FirstName'),
+            self._thingText(thing, 'LastName'),
+        ]).lower()
+        if not merged:
+            return False
+        return bool(re.search(r'\b(merchant|shop|store|vendor|trader)\b', merged))
+
+    def _looksLikeStartLocation(self, thing):
+        merged = ' '.join([
+            self._thingText(thing, 'Tag'),
+            self._thingText(thing, 'TemplateResRef'),
+            self._thingText(thing, 'MapNote'),
+            self._thingText(thing, 'LocalizedName'),
+        ]).lower()
+        if not merged:
+            return False
+        return bool(re.search(r'\b(start|spawn|entry)\b', merged))
 
     def _isThingSelectableForLayers(self, thing):
         return self._isThingVisibleForLayers(thing)
@@ -2017,10 +2124,24 @@ void main() {
             return False
         tid = thing.getNevereditId()
         if tid in getattr(self, 'soundIdSet', Set()):
-            return bool(self.layerVisibility.get('showAmbient', True))
+            return bool(self.layerVisibility.get('showSounds', True))
+        if tid in getattr(self, 'doorIdSet', Set()):
+            return bool(self.layerVisibility.get('showDoors', True))
+        if tid in getattr(self, 'placeableIdSet', Set()):
+            return bool(self.layerVisibility.get('showPlaceables', True))
+        if tid in getattr(self, 'itemIdSet', Set()):
+            return bool(self.layerVisibility.get('showItems', True))
+        if tid in getattr(self, 'encounterIdSet', Set()):
+            return bool(self.layerVisibility.get('showEncounters', True))
+        if tid in getattr(self, 'creatureIdSet', Set()):
+            if tid in getattr(self, 'merchantIdSet', Set()):
+                return bool(self.layerVisibility.get('showMerchants', True))
+            return bool(self.layerVisibility.get('showCreatures', True))
         if tid in getattr(self, 'waypointIdSet', Set()):
+            if tid in getattr(self, 'startLocationIdSet', Set()):
+                return bool(self.layerVisibility.get('showStartLocation', True))
             return bool(self.layerVisibility.get('showWaypoints', True))
-        return bool(self.layerVisibility.get('showObjects', True))
+        return True
         
     def getBaseWidth(self):
         if self.area:
@@ -2425,9 +2546,8 @@ void main() {
     def _draw2DGridAndPaintOverlay(self):
         if not self.area:
             return
-        if not self.layerVisibility.get('showGrid', True):
-            return
-        if not self.map2DCells and not self.map2DShowGrid and self.mode != ToolPalette.MAP2D_DRAW_TOOL:
+        show_grid = bool(self.layerVisibility.get('showGrid', self.map2DShowGrid))
+        if not self.map2DCells and not show_grid:
             return
 
         terrain_colours = {
@@ -2486,7 +2606,7 @@ void main() {
                 glVertex3f(x0, y1, 0.09)
                 glEnd()
 
-        if self.map2DShowGrid or self.mode == ToolPalette.MAP2D_DRAW_TOOL:
+        if show_grid:
             self.glColorf((0.82, 0.82, 0.82, 0.24))
             max_x = self.area.getWidth() * 10.0
             max_y = self.area.getHeight() * 10.0
@@ -2517,7 +2637,7 @@ void main() {
             'T terrain=%s  U asset=%s  G grid=%s  O occlusion=%s  Radius=%d  V layers'
             % (self._get2DTerrainName(self.map2DTerrainBrush),
                self._get2DAssetName(self.map2DAssetBrush),
-               'on' if self.map2DShowGrid else 'off',
+                    'on' if self.layerVisibility.get('showGrid', self.map2DShowGrid) else 'off',
                'on' if self.map2DShowOcclusion else 'off',
                self.map2DBrushRadius)
         ]
@@ -2527,6 +2647,45 @@ void main() {
             self.output_text(14, y, line)
             y -= 14
 
+    def _canUseGenericThingMarker(self, thing):
+        return bool(thing and hasattr(thing, 'getX') and hasattr(thing, 'getY') and
+                    not self._isPolygonRegionThing(thing) and not hasattr(thing, 'getRadius'))
+
+    def _getGenericThingMarkerColour(self, thing, name):
+        if name in self.selected:
+            return (0.2, 0.95, 0.2, 0.95)
+        if self.highlight == name:
+            return (0.1, 0.1, 1.0, 0.95)
+
+        tid = thing.getNevereditId()
+        if tid in getattr(self, 'creatureIdSet', Set()):
+            return (0.95, 0.35, 0.35, 0.9)
+        if tid in getattr(self, 'itemIdSet', Set()):
+            return (0.42, 0.85, 0.95, 0.9)
+        if tid in getattr(self, 'placeableIdSet', Set()):
+            return (0.95, 0.8, 0.2, 0.9)
+        if tid in getattr(self, 'doorIdSet', Set()):
+            return (0.9, 0.55, 0.2, 0.9)
+        return (0.85, 0.85, 0.85, 0.9)
+
+    def _drawGenericThingMarker(self, thing, name):
+        size = 0.35
+        self.solidColourOn()
+        try:
+            self.glColorf(self._getGenericThingMarkerColour(thing, name))
+            glLineWidth(2.0 if (name in self.selected or self.highlight == name) else 1.0)
+            glBegin(GL_LINES)
+            glVertex3f(-size, 0.0, 0.05)
+            glVertex3f(size, 0.0, 0.05)
+            glVertex3f(0.0, -size, 0.05)
+            glVertex3f(0.0, size, 0.05)
+            glEnd()
+            glLineWidth(1.0)
+            if name in self.selected or self.highlight == name:
+                self._drawSoundCircle(size * 1.8, filled=False, segments=20)
+        finally:
+            self.solidColourOff()
+
     def drawThing(self,thing,name):
         model = thing.getModel()
         if not model:
@@ -2534,6 +2693,20 @@ void main() {
                 self._drawTriggerThing(thing, name)
             elif hasattr(thing, 'getRadius'):
                 self._drawSoundThing(thing, name)
+            elif self._canUseGenericThingMarker(thing):
+                glPushMatrix()
+                try:
+                    glTranslatef(thing.getX(), thing.getY(), thing.getZ())
+                    if self.highlight == name:
+                        (self.highlightBox.x,
+                         self.highlightBox.y,
+                         self.highlightBox.z) = self.project(0,0,0)
+                    if thing.getObjectId() in self.textBoxes:
+                        box = self.textBoxes[thing.getObjectId()]
+                        (box.x,box.y,box.z) = self.project(0,0,0)
+                    self._drawGenericThingMarker(thing, name)
+                finally:
+                    glPopMatrix()
             return
         root = model.getRootNode()
         if root is None:
@@ -3074,16 +3247,13 @@ void main() {
             glPopMatrix()
 
     def drawThings(self,things):
-        if self.layerVisibility.get('showTiles', True):
-            for t in things['tiles']:
-                self.drawTile(t[0],t[1])
+        for t in things['tiles']:
+            self.drawTile(t[0],t[1])
         for t in things['things']:
             if self._isThingVisibleForLayers(t[0]):
                 self.drawThing(t[0],t[1])
 
     def _drawWaypointPaths(self):
-        if not self.layerVisibility.get('showPaths', True):
-            return
         if not self.layerVisibility.get('showWaypoints', True):
             return
         if not self.waypoints:
@@ -3174,7 +3344,20 @@ void main() {
             toon_active = False
             if self.toonShading:
                 toon_active = self._toon_use()
+            shader_render_state = False
+            
+            # Apply shader if available
+            if hasattr(self, 'shader_manager') and self._shaders_compiled:
+                shader_render_state = self.shader_manager.apply_render_state()
+                self.shader_manager.use_current_shader()
+            
             self.drawTree()
+            
+            # Disable shader after drawing
+            if hasattr(self, 'shader_manager') and self._shaders_compiled:
+                glUseProgram(0)
+                self.shader_manager.restore_render_state(shader_render_state)
+            
             if toon_active:
                 self._toon_unuse()
             self._drawWaypointPaths()

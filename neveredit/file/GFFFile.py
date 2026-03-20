@@ -193,11 +193,11 @@ class GFFFile(NeverFile):
     
         self.offset = 0
 
-        self.fieldData = ''
+        self.fieldData = b''
 
     def clearHeaderData(self):
-        self.type = ''
-        self.version = ''
+        self.type = b''
+        self.version = b''
         self.structOffset = 0
         self.structCount = 0
         self.fieldOffset = 0
@@ -239,8 +239,16 @@ class GFFFile(NeverFile):
     def headerToFile(self,f,offset=-1):
         if offset >= 0:
             f.seek(offset)
-        f.write(self.type)
-        f.write(self.version)
+        if isinstance(self.type, bytes):
+            file_type = self.type
+        else:
+            file_type = str(self.type).encode('latin1', 'ignore')
+        if isinstance(self.version, bytes):
+            file_version = self.version
+        else:
+            file_version = str(self.version).encode('latin1', 'ignore')
+        f.write((file_type + (b'\0' * 4))[:4])
+        f.write((file_version + (b'\0' * 4))[:4])
         self.dataHandler.writeUIntFile(self.structOffset,f)
         self.dataHandler.writeUIntFile(self.structCount,f)
         self.dataHandler.writeUIntFile(self.fieldOffset,f)
@@ -368,13 +376,13 @@ class GFFFile(NeverFile):
             labelIndex = len(self.labels)
             self.labels.append(label)
         if type == 'BYTE':
-            return (t,labelIndex,self.dataHandler.writeByteBuf(content) + '\0\0\0')
+            return (t,labelIndex,self.dataHandler.writeByteBuf(content) + b'\0\0\0')
         elif type == 'CHAR':
-            return (t,labelIndex,self.dataHandler.writeCharBuf(content) + '\0\0\0')
+            return (t,labelIndex,self.dataHandler.writeCharBuf(content) + b'\0\0\0')
         elif type == 'WORD':
-            return (t,labelIndex,self.dataHandler.writeUWordBuf(content) + '\0\0')
+            return (t,labelIndex,self.dataHandler.writeUWordBuf(content) + b'\0\0')
         elif type == 'SHORT':
-            return (t,labelIndex,self.dataHandler.writeWordBuf(content) + '\0\0')
+            return (t,labelIndex,self.dataHandler.writeWordBuf(content) + b'\0\0')
         elif type == 'DWORD':
             return (t,labelIndex,self.dataHandler.writeUIntBuf(content))
         elif type == 'INT':
@@ -589,7 +597,7 @@ class GFFFile(NeverFile):
         self.fieldDataToFile(f)
         self.fieldIndicesToFile(f)
         self.listIndicesToFile(f)
-        self.fieldData = ''
+        self.fieldData = b''
         self.clearFlats()
         
     def getRoot(self):

@@ -4,9 +4,11 @@
 
 Update: 3/8/2026
 I've successfully updated the code to Python3. NWM/MODs currently load, 3d mapping is functional but needs improvement.
-I kept wxPython for the interface and have tested only on Debian with KDE. Currently working on rendering fidelity/parity 
-with NWN:EE. The primary goal for this project is to provide a much needed NWN Toolset for those who are on Linux/MacOS. 
+I kept wxPython for the interface and have tested only on MacOS and Debian with KDE. Currently working on rendering fidelity/parity with NWN:EE. The primary goal for this project is to provide a much needed NWN Toolset for those who are on Linux/MacOS. 
+
 I want to expand functionality over time and possibly add features not currently implemented. 
+
+![image](media/Screenshot.png)
 
 Original readme.md:
 This is an import of an old sourceforge project. Neveredit is an editor for Bioware's Neverwinter Nights game. 

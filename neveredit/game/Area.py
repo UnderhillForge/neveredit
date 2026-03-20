@@ -17,10 +17,13 @@ from neveredit.util import neverglobals
 class Area (NeverData.NeverData):
     arePropList = {
         'Name': 'CExoLocString',
+        'Comments': 'CExoString',
         'ChanceLightning': 'Percentage',
         'ChanceRain': 'Percentage',
         'ChanceSnow': 'Percentage',
         'DayNightCycle': 'Boolean',
+        'Flags': 'Integer',
+        'Height': 'Integer,1-64',
         'IsNight': 'Boolean',
         'ModListenCheck': 'Integer',
         'ModSpotCheck': 'Integer',
@@ -31,6 +34,7 @@ class Area (NeverData.NeverData):
         'SunFogAmount': 'Integer,0-15',
         'SunShadows': 'Boolean',
         'WindPower': 'Integer,0-2',
+        'Width': 'Integer,1-64',
         'OnEnter': 'ResRef,NSS',
         'OnExit': 'ResRef,NSS',
         'OnHeartbeat': 'ResRef,NSS',
@@ -38,11 +42,11 @@ class Area (NeverData.NeverData):
         'MoonAmbientColor': 'BGRColour',
         'MoonDiffuseColor': 'BGRColour',
         'SunDiffuseColor': 'BGRColour',
-        'SunDiffuseColor': 'BGRColour',
         'SunFogColor': 'BGRColour',
         'MoonFogColor': 'BGRColour',
         'Tag': 'CExoString',
         'Tileset': 'ResRef,SET',
+        'VarTable': 'List,Vars',
         'PlayerVsPlayer': '2daIndex,pvpsettings.2da,strref,strref',
         'LoadScreenID': '2daIndex,loadscreens.2da,StrRef,strref,Label'
         }

@@ -5,7 +5,7 @@ class MapLayersWindow(wx.MiniFrame):
     """Small layer-visibility panel for map rendering toggles."""
 
     def __init__(self, parent, onLayersChanged, initialLayers=None, onGeometryChanged=None, onVisibilityChanged=None):
-        wx.MiniFrame.__init__(self, parent, -1, "Map Layers", wx.DefaultPosition, wx.Size(250, 250))
+        wx.MiniFrame.__init__(self, parent, -1, "Map Layers", wx.DefaultPosition, wx.Size(250, 280))
         self._onLayersChanged = onLayersChanged
         self._onGeometryChanged = onGeometryChanged
         self._onVisibilityChanged = onVisibilityChanged
@@ -18,12 +18,16 @@ class MapLayersWindow(wx.MiniFrame):
             initialLayers = {}
 
         specs = [
-            ("showTiles", "Show Tiles"),
-            ("showObjects", "Show Objects"),
-            ("showAmbient", "Show Ambient Sounds"),
-            ("showGrid", "Show Grid Overlay"),
+            ("showGrid", "Show Grid"),
+            ("showCreatures", "Show Creatures"),
+            ("showDoors", "Show Doors"),
+            ("showEncounters", "Show Encounters"),
+            ("showItems", "Show Items"),
+            ("showMerchants", "Show Merchants"),
+            ("showPlaceables", "Show Placeables"),
+            ("showSounds", "Show Sounds"),
             ("showWaypoints", "Show Waypoints"),
-            ("showPaths", "Show Paths"),
+            ("showStartLocation", "Show Start Location"),
         ]
 
         for key, label in specs:
@@ -33,8 +37,17 @@ class MapLayersWindow(wx.MiniFrame):
             sizer.Add(cb, 0, wx.ALL, 6)
             self._checkboxes[key] = cb
 
+        buttons = wx.BoxSizer(wx.HORIZONTAL)
+        show_all = wx.Button(panel, -1, "Show All")
+        show_none = wx.Button(panel, -1, "Show None")
+        show_all.Bind(wx.EVT_BUTTON, self._onShowAll)
+        show_none.Bind(wx.EVT_BUTTON, self._onShowNone)
+        buttons.Add(show_all, 1, wx.RIGHT, 6)
+        buttons.Add(show_none, 1)
+        sizer.Add(buttons, 0, wx.EXPAND | wx.ALL, 6)
+
         panel.SetSizer(sizer)
-        self.SetMinSize(wx.Size(220, 220))
+        self.SetMinSize(wx.Size(220, 250))
         self.Bind(wx.EVT_MOVE, self._onWindowGeometryEvent)
         self.Bind(wx.EVT_SIZE, self._onWindowGeometryEvent)
         self.Bind(wx.EVT_CLOSE, self._onClose)
@@ -46,6 +59,17 @@ class MapLayersWindow(wx.MiniFrame):
         for key, cb in list(self._checkboxes.items()):
             state[key] = bool(cb.GetValue())
         self._onLayersChanged(state)
+
+    def _setAll(self, enabled):
+        for cb in list(self._checkboxes.values()):
+            cb.SetValue(bool(enabled))
+        self._emitChange()
+
+    def _onShowAll(self, _evt):
+        self._setAll(True)
+
+    def _onShowNone(self, _evt):
+        self._setAll(False)
 
     def _onWindowGeometryEvent(self, evt):
         self._emitGeometryChange()
@@ -91,7 +115,7 @@ class MapLayersWindow(wx.MiniFrame):
         except Exception:
             return
         w = max(220, w)
-        h = max(220, h)
+        h = max(250, h)
 
         display_index = wx.Display.GetFromPoint(wx.Point(x, y))
         if display_index == wx.NOT_FOUND:

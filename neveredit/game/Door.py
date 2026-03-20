@@ -3,8 +3,6 @@
 import logging
 logger = logging.getLogger("neveredit")
 
-import copy
-
 from neveredit.game.SituatedObject import SituatedObject
 from neveredit.game.SituatedObject import SituatedObjectInstance
 from neveredit.game.SituatedObject import SituatedObjectBP
@@ -28,7 +26,21 @@ class Door(SituatedObject):
         self.addPropList ('door', self.doorPropList, gffEntry)
 
     @staticmethod
+    def _clean_token(value):
+        if value is None:
+            return ''
+        if isinstance(value, bytes):
+            value = value.decode('latin1', 'ignore')
+        text = str(value).split('\0', 1)[0].strip()
+        if not text or text in ('****', 'NULL'):
+            return ''
+        return text
+
+    @staticmethod
     def _safe_index(value):
+        value = Door._clean_token(value)
+        if not value:
+            return None
         try:
             return int(value)
         except (TypeError, ValueError):
@@ -36,31 +48,68 @@ class Door(SituatedObject):
 
     @staticmethod
     def _safe_model_name(twoda, index, *columns):
+        if twoda is None:
+            return None
         if index is None or index < 0 or index >= twoda.getRowCount():
             return None
+        labels = set(getattr(twoda, 'columnLabels', []) or [])
         for col in columns:
+            if labels and col not in labels:
+                continue
             try:
                 val = twoda.getEntry(index, col)
-            except Exception:
+            except (AttributeError, IndexError, KeyError, TypeError, ValueError):
                 continue
-            if val and val not in ('****', 'NULL'):
-                return str(val).lower() + '.mdl'
+            model_token = Door._clean_token(val)
+            if not model_token:
+                continue
+            if model_token.lower().endswith('.mdl'):
+                return model_token.lower()
+            return model_token.lower() + '.mdl'
         return None
+
+    def _model_from_template(self, rm):
+        """Resolve model from the referenced UTD template when needed."""
+        try:
+            template = self._clean_token(self['TemplateResRef'])
+        except (AttributeError, KeyError, TypeError):
+            return None
+        if not template:
+            return None
+        try:
+            utd = rm.getResourceByName(template.lower() + '.utd')
+        except (AttributeError, TypeError, ValueError):
+            return None
+        if not utd:
+            return None
+
+        root = utd.getRoot()
+        appearance_idx = self._safe_index(root['Appearance']) if 'Appearance' in root else None
+        generic_idx = self._safe_index(root['GenericType']) if 'GenericType' in root else None
+
+        doortypes = rm.getResourceByName('doortypes.2da')
+        model_name = self._safe_model_name(doortypes, appearance_idx, 'Model', 'ModelName')
+        if model_name:
+            return model_name
+
+        genericdoors = rm.getResourceByName('genericdoors.2da')
+        return self._safe_model_name(genericdoors, generic_idx, 'ModelName', 'Model')
         
     def getModel(self,copy=False):
         if not copy and self.model:
             return self.model
+        rm = neverglobals.getResourceManager()
         index = self._safe_index(self['Appearance'])
         model_name = None
         if index is not None and index >= 0:
-            twoda = neverglobals.getResourceManager()\
-                    .getResourceByName('doortypes.2da')
+            twoda = rm.getResourceByName('doortypes.2da')
             model_name = self._safe_model_name(twoda, index, 'Model', 'ModelName')
         if not model_name:
             index = self._safe_index(self['GenericType'])
-            twoda = neverglobals.getResourceManager()\
-                    .getResourceByName('genericdoors.2da')
+            twoda = rm.getResourceByName('genericdoors.2da')
             model_name = self._safe_model_name(twoda, index, 'ModelName', 'Model')
+        if not model_name:
+            model_name = self._model_from_template(rm)
         if not model_name:
             warning_key = (self['Appearance'], self['GenericType'])
             if warning_key not in Door._missing_model_warnings:
@@ -70,8 +119,7 @@ class Door(SituatedObject):
             self.modelName = ''
             return None
         self.modelName = model_name
-        model = neverglobals.getResourceManager()\
-                .getResourceByName(self.modelName,copy)
+        model = rm.getResourceByName(self.modelName,copy)
         if not copy:
             self.model = model
         return model

@@ -2,9 +2,11 @@
 
 import logging
 logger = logging.getLogger('neveredit')
+import re
 
 import neveredit.file.ERFFile
 from neveredit.file.GFFFile import GFFStruct,GFFFile
+from neveredit.file.CExoLocString import CExoLocString
 from neveredit.game.Area import Area
 from neveredit.game.NeverData import NeverData
 import neveredit.game.Factions
@@ -70,6 +72,58 @@ class Module(Progressor,NeverData):
         if hours:
             return "%d:%02d:%02d" % (hours, mins, secs)
         return "%02d:%02d" % (mins, secs)
+
+    @staticmethod
+    def _sanitize_resref(text, fallback='module'):
+        value = re.sub(r'[^a-zA-Z0-9_]', '_', (text or '').lower())
+        value = re.sub(r'_+', '_', value).strip('_')
+        value = value[:16]
+        if not value:
+            value = fallback[:16]
+        return value
+
+    @classmethod
+    def createBlankModuleFile(cls, file_path, module_name):
+        """Create a minimal valid .MOD file with a blank IFO root."""
+        display_name = (module_name or '').strip() or 'New Module'
+        module_tag = cls._sanitize_resref(display_name, fallback='module')
+
+        module_erf = neveredit.file.ERFFile.ERFFile('MOD')
+        ifo_gff = GFFFile()
+        ifo_gff.type = 'IFO '
+        ifo_gff.version = 'V3.2'
+        root = GFFStruct()
+
+        root.add('Mod_Name', CExoLocString(value=display_name).toGFFEntry(), 'CExoLocString')
+        root.add('Mod_Description', CExoLocString(value='').toGFFEntry(), 'CExoLocString')
+        root.add('Mod_Tag', module_tag, 'CExoString')
+        root.add('Mod_Entry_Area', '', 'ResRef')
+        root.add('Mod_Area_list', [], 'List')
+        root.add('Mod_HakList', [], 'List')
+        root.add('Mod_CustomTlk', '', 'CExoString')
+        root.add('VarTable', [], 'List')
+        root.add('Mod_DawnHour', 6, 'INT')
+        root.add('Mod_DuskHour', 18, 'INT')
+        root.add('Mod_MinPerHour', 2, 'INT')
+        root.add('Mod_StartDay', 1, 'INT')
+        root.add('Mod_StartMonth', 1, 'INT')
+        root.add('Mod_StartYear', 1372, 'INT')
+        root.add('Mod_StartHour', 13, 'INT')
+        root.add('Mod_XPScale', 100, 'INT')
+
+        for script_prop in (
+            'Mod_OnAcquirItem', 'Mod_OnActvtItem', 'Mod_OnClientEntr',
+            'Mod_OnClientLeav', 'Mod_OnCutsnAbort', 'Mod_OnHeartbeat',
+            'Mod_OnModLoad', 'Mod_OnModStart', 'Mod_OnPlrDeath',
+            'Mod_OnPlrDying', 'Mod_OnPlrEqItm', 'Mod_OnPlrLvlUp',
+            'Mod_OnPlrRest', 'Mod_OnPlrUnEqItm', 'Mod_OnSpawnBtnDn',
+            'Mod_OnUnAqreItem', 'Mod_OnUsrDefined',
+        ):
+            root.add(script_prop, '', 'ResRef')
+
+        ifo_gff.rootStructure = root
+        module_erf.addResourceByName('module.IFO', ifo_gff)
+        module_erf.toFile(file_path)
     
     def __init__(self,fname):
         Progressor.__init__(self)
@@ -468,6 +522,10 @@ class Module(Progressor,NeverData):
         area_entry = GFFStruct()
         area_entry.add('Area_Name', resref, 'ResRef')
         area_list.append(area_entry)
+
+        entry_area = self.gffstructDict['ifo'].getInterpretedEntry('Mod_Entry_Area')
+        if not entry_area:
+            self.gffstructDict['ifo'].setInterpretedEntry('Mod_Entry_Area', resref)
 
         neverglobals.getResourceManager().moduleResourceListChanged()
         self.needSave = True

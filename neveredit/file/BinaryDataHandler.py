@@ -201,13 +201,20 @@ class BinaryDataHandler:
         f.write(self.writeLocalizedStringBuf(langID,str))
 
     def writeResRef(self,rr,f):
-        rr = rr.encode('ascii')
-        rr += '\0'*(16-len(rr))
-        f.write(struct.pack('<16s',rr))
+        if isinstance(rr, bytes):
+            raw = rr
+        else:
+            raw = str(rr).encode('ascii', 'ignore')
+        raw = (raw + (b'\0' * 16))[:16]
+        f.write(struct.pack('<16s',raw))
 
     def writeSizedResRefBuf(self,rr):
-        b = self.writeUByteBuf(len(rr))
-        b += rr.encode('ascii')
+        if isinstance(rr, bytes):
+            raw = rr
+        else:
+            raw = str(rr).encode('ascii', 'ignore')
+        b = self.writeUByteBuf(len(raw))
+        b += raw
         return b
 
     def writeSizedResRefFile(self,rr,f):
@@ -223,14 +230,20 @@ class BinaryDataHandler:
         f.write(self.writeCExoStringBuf(str))
 
     def writeSizedStringFile(self,str,size,f):
-        str += (size-len(str))*'\0'
-        f.write(str[:16])
+        if isinstance(str, bytes):
+            raw = str
+        else:
+            raw = str.encode('latin1', 'ignore')
+        raw = (raw + (b'\0' * max(0, size - len(raw))))[:size]
+        f.write(raw)
 
     def writeCExoLocStringsBuf(self,resref,strings):
         totSize = 8
         for s in strings:
             totSize += 8 + len(s[1])
         b = self.writeUIntBuf(totSize)
+        if isinstance(resref, int) and resref < 0:
+            resref = (resref + (1 << 32)) & 0xFFFFFFFF
         b += self.writeUIntBuf(resref)
         b += self.writeUIntBuf(len(strings))
         for s in strings:

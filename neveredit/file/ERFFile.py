@@ -58,6 +58,16 @@ class ERFFile(NeverFile):
             f.write(self.content)
 
     HEADERSIZE = 160
+
+    @staticmethod
+    def _to_bytes(value, fixed_length=None):
+        if isinstance(value, bytes):
+            raw = value
+        else:
+            raw = str(value).encode('latin1', 'ignore')
+        if fixed_length is not None:
+            raw = (raw + (b'\0' * fixed_length))[:fixed_length]
+        return raw
     
     def __init__(self,typ='ERF'):
         '''Create an empty erf file.
@@ -77,7 +87,7 @@ class ERFFile(NeverFile):
         self.offsetToResourceList = ERFFile.HEADERSIZE
         self.buildYear = time.localtime().tm_year - 1900
         self.buildDay = time.localtime().tm_yday
-        self.descriptionRef = ""
+        self.descriptionRef = b""
 
         self.localizedStrings = {}
         
@@ -116,8 +126,8 @@ class ERFFile(NeverFile):
 
     def headerToFile(self):
         """output the header info of the ERF file"""
-        self.writeFileHandle.write(self.type)
-        self.writeFileHandle.write(self.version)
+        self.writeFileHandle.write(self._to_bytes(self.type, 4))
+        self.writeFileHandle.write(self._to_bytes(self.version, 4))
         self.dataHandler.writeIntFile(self.languageCount,self.writeFileHandle)
         self.dataHandler.writeIntFile(self.localizedStringSize,self.writeFileHandle)
         self.dataHandler.writeIntFile(self.entryCount,self.writeFileHandle)
@@ -126,8 +136,8 @@ class ERFFile(NeverFile):
         self.dataHandler.writeIntFile(self.offsetToResourceList,self.writeFileHandle)
         self.dataHandler.writeIntFile(self.buildYear,self.writeFileHandle)
         self.dataHandler.writeIntFile(self.buildDay,self.writeFileHandle)
-        self.writeFileHandle.write(self.descriptionRef)
-        self.writeFileHandle.write(116*'\0')
+        self.writeFileHandle.write(self._to_bytes(self.descriptionRef, 4))
+        self.writeFileHandle.write(b'\0' * 116)
             
     def readLocalizedStrings(self):
         """read the ERF localized string file section"""
@@ -184,7 +194,7 @@ class ERFFile(NeverFile):
             self.dataHandler.writeResRef(k.name,self.writeFileHandle)
             self.dataHandler.writeIntFile(k.id,self.writeFileHandle)
             self.dataHandler.writeWordFile(k.type,self.writeFileHandle)
-            self.writeFileHandle.write(2*'\0')
+            self.writeFileHandle.write(b'\0' * 2)
 
     def writeResourceList(self):
         """write the resource list section of an ERF file.

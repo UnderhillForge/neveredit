@@ -104,7 +104,7 @@ class PlaceholderPalettePage(wx.Panel):
         title_font = title.GetFont()
         title_font.SetWeight(wx.FONTWEIGHT_BOLD)
         title.SetFont(title_font)
-        detail.SetForegroundColour(wx.Colour(110, 110, 110))
+        detail.SetForegroundColour(WxUtils.getMutedTextColour(self))
 
         sizer.Add(title, 0, wx.ALL, 10)
         sizer.Add(detail, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
@@ -168,10 +168,11 @@ class ToolFrame(wx.MiniFrame):
         pos = (int(805 * ui_scale), int(25 * ui_scale))
         size = (int(340 * ui_scale), int(680 * ui_scale))
         wx.MiniFrame.__init__(self,None,-1,"Tools",pos,size)
-        self.SetBackgroundColour('WHITE')
+        panel_bg = WxUtils.getPanelBackgroundColour(self)
+        self.SetBackgroundColour(panel_bg)
         self.CreateStatusBar()
         self.toolbar = self.CreateToolBar(wx.TB_FLAT | wx.NO_BORDER | wx.TB_HORIZONTAL)
-        self.toolbar.SetBackgroundColour(wx.WHITE)
+        self.toolbar.SetBackgroundColour(panel_bg)
         self.toolbar.SetToolBitmapSize((26,24))
         self.selectId = SELECTION_TOOL
         self.toolbar.AddTool(self.selectId,

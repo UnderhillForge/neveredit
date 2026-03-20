@@ -69,6 +69,26 @@ class Creature(LocatedNeverData):
     def __init__(self,gffEntry):
         LocatedNeverData.__init__(self)
         self.addPropList('main',self.creaturePropList,gffEntry)
+
+    @staticmethod
+    def _clean_twoda_token(value):
+        if value is None:
+            return ''
+        if isinstance(value, bytes):
+            value = value.decode('latin1', 'ignore')
+        text = str(value).split('\0', 1)[0].strip()
+        if not text or text in ('****', 'NULL'):
+            return ''
+        return text
+
+    @staticmethod
+    def _candidate_model_names(token):
+        token = Creature._clean_twoda_token(token).lower()
+        if not token:
+            return []
+        if token.endswith('.mdl'):
+            return [token]
+        return [token + '.mdl']
         
     def getName(self):
         """Return first and last name of this creature as a single string"""
@@ -85,46 +105,56 @@ class Creature(LocatedNeverData):
                 return None
         except (TypeError, ValueError):
             return None
-        t = str(twoda.getEntry(index,'MODELTYPE')).strip().upper()
+        t = self._clean_twoda_token(twoda.getEntry(index,'MODELTYPE')).upper()
 
-        model_name = None
         if t == 'P':
-            # Player-style entries: prefer explicit model columns when present.
-            for col in ('MODEL_A', 'MODEL_B', 'MODEL', 'RACE'):
-                try:
-                    raw = twoda.getEntry(index, col)
-                except Exception:
-                    continue
-                if raw is None:
-                    continue
-                candidate = str(raw).strip()
-                if not candidate or candidate in ('****', 'NULL'):
-                    continue
-                model_name = candidate.lower() + '.mdl'
-                break
+            columns = ('MODEL_A', 'MODEL_B', 'MODEL', 'RACE')
         else:
-            race = twoda.getEntry(index,'RACE')
-            if race and race not in ('****', 'NULL'):
-                model_name = str(race).lower() + '.mdl'
+            columns = ('RACE', 'MODEL', 'MODEL_A', 'MODEL_B')
 
-        if not model_name:
+        candidates = []
+        for col in columns:
+            try:
+                raw = twoda.getEntry(index, col)
+            except (AttributeError, IndexError, KeyError, TypeError, ValueError):
+                continue
+            for candidate in self._candidate_model_names(raw):
+                if candidate not in candidates:
+                    candidates.append(candidate)
+
+        # Choose the first candidate that is actually present in resources.
+        for model_name in candidates:
+            model = rm.getResourceByName(model_name, copy)
+            if model is None:
+                continue
+            self.modelName = model_name
+            if not copy:
+                self.model = model
+            return model
+
+        if not candidates:
             warning_key = ('missing-creature-model', index, t)
             if warning_key not in Creature._missing_model_warnings:
                 Creature._missing_model_warnings.add(warning_key)
                 logger.warning('could not resolve creature model for Appearance_Type=%s (MODELTYPE=%s)', index, t)
             return None
 
-        self.modelName = model_name
-        model = rm.getResourceByName(self.modelName,copy)
-        if model is None:
-            warning_key = ('missing-creature-resource', index, self.modelName)
+        # Some appearance rows only define part prefixes (e.g. single-character
+        # values) and do not map to a standalone creature MDL.
+        if t == 'P' and all(len(name.split('.', 1)[0]) <= 2 for name in candidates):
+            warning_key = ('missing-creature-playerparts', index, tuple(candidates))
             if warning_key not in Creature._missing_model_warnings:
                 Creature._missing_model_warnings.add(warning_key)
-                logger.warning('creature model resource missing for Appearance_Type=%s: %s', index, self.modelName)
+                logger.debug('no standalone model for player-style Appearance_Type=%s candidates=%s',
+                             index, ', '.join(candidates))
             return None
-        if not copy:
-            self.model = model
-        return model
+
+        warning_key = ('missing-creature-resource', index, tuple(candidates))
+        if warning_key not in Creature._missing_model_warnings:
+            Creature._missing_model_warnings.add(warning_key)
+            logger.warning('creature model resource missing for Appearance_Type=%s candidates=%s',
+                           index, ', '.join(candidates))
+        return None
 
     def getPLTTintContext(self):
         """Return per-creature PLT tint indices when present.

@@ -26,6 +26,7 @@ Set = set
 from neveredit.util import Utils
 from neveredit.util import Preferences
 from neveredit.util import neverglobals
+from neveredit.ui.ShaderManager import ShaderManager
 
 Numeric = Utils.getNumPy()
 LinearAlgebra = Utils.getLinAlg()
@@ -80,12 +81,13 @@ class GLWindow(glcanvas.GLCanvas):
         self._activeAnimationNodes = None
         self._superModelCache = {}
         self._loggedAnimationTrackBindings = set()
+        self._pinnedAnimationTrackName = None
         self.animationsEnabled = True
         self.animationMode = 'idle'
         self.animationModes = ('idle', 'walk')
         self.animationSpeedByMode = {'idle': 1.0, 'walk': 1.8}
         self.animationTrackByMode = {
-            'idle': ('pause1', 'pause', 'idle', 'ready1', 'default'),
+            'idle': ('idle', 'pause1', 'pause', 'ready1', 'default'),
             'walk': ('walk', 'walk01', 'walk1', 'run', 'run1'),
         }
         self._animationStartTime = time.time()
@@ -94,7 +96,18 @@ class GLWindow(glcanvas.GLCanvas):
         self._animationTimer = wx.Timer(self)
         self.Bind(wx.EVT_TIMER, self.OnAnimationTimer, self._animationTimer)
         self._animationTimer.Start(33)
-        
+
+        # Initialize shader manager (will compile shaders after GL context ready)
+        self.shader_manager = ShaderManager()
+        self._shaders_compiled = False
+
+        # Belt-and-suspenders: stop the animation timer whenever the C++ window
+        # object is torn down, regardless of *how* destruction was initiated
+        # (explicit Destroy(), notebook DeletePage(), parent frame close, etc.).
+        # wxEVT_DESTROY fires from wxWindowBase::~wxWindowBase() before C++
+        # memory is released, so the timer owner is still valid at this point.
+        self.Bind(wx.EVT_WINDOW_DESTROY, self._onWindowDestroy)
+
         self.Bind(wx.EVT_ERASE_BACKGROUND, self.OnEraseBackground)
         self.Bind(wx.EVT_SIZE, self.OnSize)
         self.Bind(wx.EVT_PAINT, self.OnPaint)
@@ -119,6 +132,17 @@ class GLWindow(glcanvas.GLCanvas):
         except Exception:
             pass
         self._animationTimer = None
+
+    def _onWindowDestroy(self, event):
+        """Fired by wx from the C++ destructor chain before canvas memory is
+        freed.  Stops the animation timer unconditionally so it can never
+        dispatch into a freed wxEvtHandler, regardless of how the window was
+        torn down (DeletePage, parent close, explicit Destroy(), etc.)."""
+        if event.GetEventObject() is self:
+            self._destroying = True
+            self.animationsEnabled = False
+            self._stopAnimationTimer()
+        event.Skip()
 
     def Destroy(self):
         # Avoid use-after-free crashes from late timer callbacks while wx tears
@@ -180,6 +204,42 @@ class GLWindow(glcanvas.GLCanvas):
             index = -1
         next_mode = self.animationModes[(index + 1) % len(self.animationModes)]
         return self.setAnimationMode(next_mode)
+
+    def setAnimationTrackByName(self, track_name):
+        """Pin to a specific animation track by name, bypassing mode-based resolution.
+        Pass None to resume mode-based selection."""
+        self._pinnedAnimationTrackName = track_name if track_name else None
+        self._animationStartTime = time.time()
+        self._loggedAnimationTrackBindings.clear()
+        self.requestRedraw()
+
+    def getAvailableAnimationTrackNames(self, model):
+        """Return sorted list of all animation track names from model and its supermodel."""
+        if model is None:
+            return []
+        names = set()
+        if hasattr(model, 'getAnimationNames'):
+            names.update(model.getAnimationNames())
+        super_name = str(getattr(model, 'superModelName', '') or '').strip().lower()
+        if super_name and super_name not in ('null', '****'):
+            if super_name not in self._superModelCache:
+                try:
+                    rm = neverglobals.getResourceManager()
+                    candidates = [super_name]
+                    if not super_name.endswith('.mdl'):
+                        candidates.insert(0, super_name + '.mdl')
+                    loaded = None
+                    for candidate in candidates:
+                        loaded = rm.getResourceByName(candidate)
+                        if loaded is not None:
+                            break
+                    self._superModelCache[super_name] = loaded
+                except Exception:
+                    pass
+            super_model = self._superModelCache.get(super_name)
+            if super_model is not None and hasattr(super_model, 'getAnimationNames'):
+                names.update(super_model.getAnimationNames())
+        return sorted(names)
 
     def makeCurrent(self):
         '''Activate GL context on wx versions that require an explicit context.'''
@@ -421,27 +481,36 @@ class GLWindow(glcanvas.GLCanvas):
             return
         if model is not None:
             node._ownerModel = model
-        node.controllerDisplayList = glGenLists(1)
-        glNewList(node.controllerDisplayList,GL_COMPILE)
-        self.processControllers(node)
-        glEndList()
-        if self.isRenderableMeshNode(node):
+        self._ensureNodeDisplayLists(node)
+                    
+        for c in node.children:
+            self.preprocessNodesHelper(c,tag,level+1,model)
+
+    def _ensureNodeDisplayLists(self,node):
+        if node is None:
+            return
+        if not getattr(node, 'controllerDisplayList', None):
+            node.controllerDisplayList = glGenLists(1)
+            glNewList(node.controllerDisplayList,GL_COMPILE)
+            self.processControllers(node)
+            glEndList()
+        if self.isRenderableMeshNode(node) and not getattr(node, 'colourDisplayList', None):
             node.colourDisplayList = glGenLists(1)
             glNewList(node.colourDisplayList,GL_COMPILE)
             self.processColours(node)
             glEndList()
             self._ensureNodeTextureGL(node,0)
             self._ensureNodeTextureGL(node,1)
-                    
-        for c in node.children:
-            self.preprocessNodesHelper(c,tag,level+1,model)
 
     def _resolveAnimationNodesForModel(self, model):
         if model is None or not self.animationsEnabled:
             return None
         if not hasattr(model, 'resolveAnimationTrack'):
             return None
-        preferred = self.animationTrackByMode.get(self.animationMode, ())
+        if self._pinnedAnimationTrackName:
+            preferred = (self._pinnedAnimationTrackName,)
+        else:
+            preferred = self.animationTrackByMode.get(self.animationMode, ())
         track_name = model.resolveAnimationTrack(preferred)
         if track_name:
             nodes = model.getAnimationNodes(track_name)
@@ -541,6 +610,29 @@ class GLWindow(glcanvas.GLCanvas):
             self.textureStore[store_key] = gl_name
         setattr(node, gl_attr, self.textureStore[store_key])
 
+    def _getNodeGLTextureName(self,node,slot):
+        gl_attr = 'glTexture%dName' % slot
+        gl_name = getattr(node, gl_attr, None)
+        if gl_name:
+            return gl_name
+
+        legacy_gl_attr = 'gltexture%dname' % slot
+        gl_name = getattr(node, legacy_gl_attr, None)
+        if gl_name:
+            return gl_name
+
+        tex_attr = 'texture%d' % slot
+        if getattr(node, tex_attr, None) is None:
+            return None
+
+        # Lazily create GL texture handles for nodes parsed with valid
+        # texture metadata but without precomputed glTexture*Name attributes.
+        try:
+            self._ensureNodeTextureGL(node, slot)
+        except Exception:
+            return None
+        return getattr(node, gl_attr, None) or getattr(node, legacy_gl_attr, None)
+
     def mergeBoxes(self,boxResult,boxAdd):
         for i in range(3):
             boxResult[0][i] = min(boxResult[0][i],boxAdd[0][i])
@@ -550,6 +642,7 @@ class GLWindow(glcanvas.GLCanvas):
     def calculateNodeTreeBoundingBoxHelper(self,node,bb):
         glPushMatrix()
         #first, position transform to this node's space
+        self._ensureNodeDisplayLists(node)
         glCallList(node.controllerDisplayList)
         #calculcate this node's world space bounding box
         mybb = Numeric.array([3*[float(sys.maxsize)],
@@ -798,8 +891,13 @@ class GLWindow(glcanvas.GLCanvas):
 
     def processTextures(self,node):
         if node.texture0:
+            gl_tex0 = self._getNodeGLTextureName(node, 0)
+            if not gl_tex0:
+                glDisable(GL_TEXTURE_2D)
+                glDisableClientState(GL_TEXTURE_COORD_ARRAY)
+                return False
             glEnable(GL_TEXTURE_2D)
-            glBindTexture(GL_TEXTURE_2D,node.glTexture0Name)
+            glBindTexture(GL_TEXTURE_2D,gl_tex0)
             if hasattr(node,'texture0Vertices') and \
                node.texture0Vertices is not None and \
                len(node.texture0Vertices) > 0:
@@ -821,8 +919,12 @@ class GLWindow(glcanvas.GLCanvas):
 
     def processTexturesImmediate(self,node):
         if node.texture0:
+            gl_tex0 = self._getNodeGLTextureName(node, 0)
+            if not gl_tex0:
+                glDisable(GL_TEXTURE_2D)
+                return False
             glEnable(GL_TEXTURE_2D)
-            glBindTexture(GL_TEXTURE_2D,node.glTexture0Name)
+            glBindTexture(GL_TEXTURE_2D,gl_tex0)
             return True
         glDisable(GL_TEXTURE_2D)
         return False
@@ -1069,6 +1171,7 @@ class GLWindow(glcanvas.GLCanvas):
         if boxOnly and node.boundingBox[1][0]:
             self.renderBox(node.boundingBox)
             return True
+        self._ensureNodeDisplayLists(node)
         try:
             textured = self.processTextures(node)
             glCallList(node.colourDisplayList)
@@ -1094,7 +1197,7 @@ class GLWindow(glcanvas.GLCanvas):
     def drawSecondaryTexturePass(self,node,forceImmediate=False):
         if node is None or not getattr(node, 'texture1', None):
             return
-        gl_tex1 = getattr(node, 'glTexture1Name', None)
+        gl_tex1 = self._getNodeGLTextureName(node, 1)
         if not gl_tex1:
             return
         texcoords = getattr(node, 'texture1Vertices', None)
@@ -1470,6 +1573,16 @@ class GLWindow(glcanvas.GLCanvas):
         glDisable(GL_POLYGON_OFFSET_FILL)
         glHint(GL_PERSPECTIVE_CORRECTION_HINT, GL_NICEST)
         glInitNames()
+
+        # Compile shaders now that GL context is ready
+        if not self._shaders_compiled:
+            try:
+                self.shader_manager.compile_all()
+                self._shaders_compiled = True
+                logger.info('Shaders compiled successfully')
+            except Exception as e:
+                logger.warning('Failed to compile shaders: %s', e)
+                self._shaders_compiled = False
 
         self.SetupProjection()
     ##self.wireOn()
