@@ -2,7 +2,7 @@
 import logging
 logger = logging.getLogger("neveredit")
 
-import os,os.path,sys
+import os,os.path,sys,time
 import encodings, codecs
 
 from neveredit.util import Utils
@@ -83,17 +83,72 @@ class Preferences:
                 for key in self.values:
                     if key in pl:
                         self.values[key] = getattr(pl,key)
-            except:
-                #could be out of date or malformed
-                logger.exception("while reading preferences file")
+            except Exception as exc:
+                # Could be out of date or malformed/truncated.
+                logger.warning("while reading preferences file: %s", exc)
+                self._quarantineCorruptPrefsFile()
+
+    def _quarantineCorruptPrefsFile(self):
+        if not os.path.exists(self.prefPath):
+            return
+        backup_path = self.prefPath + '.corrupt'
+        if os.path.exists(backup_path):
+            backup_path = '%s.corrupt.%d' % (self.prefPath, int(time.time()))
+        try:
+            os.replace(self.prefPath, backup_path)
+            logger.warning("moved unreadable preferences file to %s", backup_path)
+        except Exception:
+            logger.exception("unable to move unreadable preferences file")
                 
                 
     def save(self):
-        '''Save the current preferences settings.'''        
+        '''Save the current preferences settings.'''
         codecs.register(encodings.search_function)
+        pref_dir = os.path.dirname(self.prefPath)
+        if pref_dir and not os.path.isdir(pref_dir):
+            try:
+                os.makedirs(pref_dir)
+            except OSError:
+                pass
+
         pl = plistlib.Plist()
-        pl.update(self.values)
-        pl.write(self.prefPath)
+        pl.update(self._sanitize_for_plist(self.values))
+        tmp_path = self.prefPath + '.tmp'
+        try:
+            pl.write(tmp_path)
+            os.replace(tmp_path, self.prefPath)
+            return True
+        except Exception:
+            logger.exception("while writing preferences file")
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except Exception:
+                pass
+            return False
+
+    def _sanitize_for_plist(self, value):
+        '''Remove None values recursively because the legacy plist writer
+        cannot serialize NoneType.'''
+        if value is None:
+            return None
+        if isinstance(value, dict):
+            cleaned = {}
+            for key, item in value.items():
+                cleaned_item = self._sanitize_for_plist(item)
+                if cleaned_item is None:
+                    continue
+                cleaned[key] = cleaned_item
+            return cleaned
+        if isinstance(value, (list, tuple)):
+            cleaned = []
+            for item in value:
+                cleaned_item = self._sanitize_for_plist(item)
+                if cleaned_item is None:
+                    continue
+                cleaned.append(cleaned_item)
+            return cleaned
+        return value
 
     def update(self,valueDict):
         self.values.update(valueDict)

@@ -8,9 +8,30 @@ I kept wxPython for the interface and have tested only on MacOS and Debian with 
 
 I want to expand functionality over time and possibly add features not currently implemented. 
 
-![image](https://user-images.githubusercontent.com/9730025/150209340-9aa060a7-240d-4019-8639-7ab7956e22ff.png)
+## Setup from source
+
+From the repo root:
+
+```bash
+./setup-neveredit.sh
+```
+
+Then run neveredit:
+
+```bash
+./.venv/bin/python ./neveredit/run/neveredit --disable_pythonw
+```
+
+On macOS, you can also use:
+
+```bash
+./run-mac.sh
+```
 
 Original readme.md:
+
+![image](https://user-images.githubusercontent.com/9730025/150209340-9aa060a7-240d-4019-8639-7ab7956e22ff.png)
+
 This is an import of an old sourceforge project. Neveredit is an editor for Bioware's Neverwinter Nights game. 
 
 It also includes all the low level libraries and a command line tool to read and write the binary format files that the game uses.
