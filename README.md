@@ -1,6 +1,6 @@
 # neveredit
 
-![image](https://user-images.githubusercontent.com/9730025/150209340-9aa060a7-240d-4019-8639-7ab7956e22ff.png)
+![image](media/Screenshot.png)
 
 Update: 3/8/2026
 I've successfully updated the code to Python3. NWM/MODs currently load, 3d mapping is functional but needs improvement.
@@ -8,7 +8,7 @@ I kept wxPython for the interface and have tested only on MacOS and Debian with 
 
 I want to expand functionality over time and possibly add features not currently implemented. 
 
-![image](media/Screenshot.png)
+![image](https://user-images.githubusercontent.com/9730025/150209340-9aa060a7-240d-4019-8639-7ab7956e22ff.png)
 
 Original readme.md:
 This is an import of an old sourceforge project. Neveredit is an editor for Bioware's Neverwinter Nights game. 
