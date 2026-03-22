@@ -237,6 +237,11 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
         self.map2DHeightStep = 0.25
         self.map2DShowGrid = True
         self.map2DShowOcclusion = True
+        self.map2DTileSelection = None
+        self.map2DTileOrientation = 0
+        self._map2DTilesetCacheKey = None
+        self._map2DModelToTileId = {}
+        self._map2DGroupByModel = {}
 
         self.layerVisibility = {
             'showGrid': True,
@@ -664,8 +669,37 @@ void main() {
             self.dragOffset = (10,10)
         elif self.mode == ToolPalette.MAP2D_DRAW_TOOL:
             self.beingPainted = None
+            self.map2DTileSelection = evt.getData()
         else:
             self.beingPainted = None
+            self.map2DTileSelection = None
+
+    def refreshChangedTiles(self, changed_indices):
+        if not self.area:
+            return
+        self.tiles = self.area.getTiles()
+        if not self.tiles:
+            self.requestRedraw()
+            return
+
+        if self.preprocessed and not self.preprocessing:
+            for index in changed_indices:
+                if index < 0 or index >= len(self.tiles):
+                    continue
+                tile = self.tiles[index]
+                model = self._getModelSafe(tile, 'tile')
+                if model and tile.modelName not in self.preprocessedModels:
+                    self.preprocessNodes(model, 't' + repr(index), bbox=True)
+                    self.preprocessedModels.add(tile.modelName)
+                elif not model:
+                    self._warnMissingModelOnce('tile', tile.getName())
+
+        self.makeQuadTree()
+        if self.preprocessed and not self.preprocessing:
+            self._rebuildRenderWorldCache()
+        else:
+            self._render_world_cache.reset(len(self.tiles or []), len(self.fullThingList or []))
+        self.requestRedraw()
 
     def _newAmbientSoundInstance(self):
         gff = GFFStruct(SoundInstance.GFF_STRUCT_ID)
@@ -1306,6 +1340,11 @@ void main() {
             key_char = ''
 
         if self.mode == ToolPalette.MAP2D_DRAW_TOOL:
+            if key_char == 'r':
+                self.map2DTileOrientation = (self.map2DTileOrientation + 1) % 4
+                self.setStatus('2D tile rotation: %d°' % (self.map2DTileOrientation * 90))
+                self.requestRedraw()
+                return
             if key_char == 't':
                 self.map2DTerrainBrush = (self.map2DTerrainBrush + 1) % 6
                 self.setStatus('2D terrain brush: %s' % self._get2DTerrainName(self.map2DTerrainBrush))
@@ -1333,6 +1372,7 @@ void main() {
             if key_char == 'c':
                 self.map2DCells = {}
                 self._save2DDraftForCurrentArea()
+                self._notify2DDraftChanged()
                 self.setStatus('2D overlay cleared')
                 self.requestRedraw()
                 return
@@ -2561,6 +2601,152 @@ void main() {
                     continue
                 yield (cx + ox, cy + oy)
 
+    def _get2DAreaTileCoord(self, x, y):
+        if not self.area:
+            return (0, 0)
+        tx = int(math.floor(float(x) / 10.0))
+        ty = int(math.floor(float(y) / 10.0))
+        tx = max(0, min(self.area.getWidth() - 1, tx))
+        ty = max(0, min(self.area.getHeight() - 1, ty))
+        return (tx, ty)
+
+    def _get2DCellAreaTileCoord(self, cell_key):
+        cx, cy = cell_key
+        world_x = (float(cx) + 0.5) * self.map2DCellSize
+        world_y = (float(cy) + 0.5) * self.map2DCellSize
+        return self._get2DAreaTileCoord(world_x, world_y)
+
+    def _ensure2DTilesetPlacementCache(self):
+        if not self.area:
+            self._map2DTilesetCacheKey = None
+            self._map2DModelToTileId = {}
+            self._map2DGroupByModel = {}
+            return
+        tileset = self.area.getTileSet()
+        if tileset is None:
+            self._map2DTilesetCacheKey = None
+            self._map2DModelToTileId = {}
+            self._map2DGroupByModel = {}
+            return
+
+        cache_key = id(tileset)
+        if self._map2DTilesetCacheKey == cache_key:
+            return
+
+        model_to_tile_id, tile_id_to_model = Module._build_tileset_model_maps(tileset)
+        group_by_model = {}
+        try:
+            group_count = int(tileset.getGroupCount())
+        except Exception:
+            group_count = 0
+        for group_id in range(group_count):
+            section = 'GROUP' + str(group_id)
+            rows = tileset.getint(section, 'Rows', fallback=0)
+            cols = tileset.getint(section, 'Columns', fallback=0)
+            if rows <= 0 or cols <= 0:
+                continue
+            tile_ids = []
+            for idx in range(rows * cols):
+                tile_id = tileset.getint(section, 'Tile' + str(idx), fallback=-1)
+                if tile_id < 0:
+                    tile_ids = []
+                    break
+                tile_ids.append(int(tile_id))
+            if not tile_ids:
+                continue
+            for tile_id in tile_ids:
+                model_name = tile_id_to_model.get(tile_id)
+                if model_name and model_name not in group_by_model:
+                    group_by_model[model_name] = {
+                        'rows': int(rows),
+                        'cols': int(cols),
+                        'tile_ids': list(tile_ids),
+                    }
+
+        self._map2DTilesetCacheKey = cache_key
+        self._map2DModelToTileId = model_to_tile_id
+        self._map2DGroupByModel = group_by_model
+
+    def _resolve2DTileSelection(self):
+        selection = self.map2DTileSelection
+        if selection is None or not hasattr(selection, 'getResRef') or not hasattr(selection, 'getSectionName'):
+            return None
+        resref = str(selection.getResRef() or '').strip().lower()
+        if not resref:
+            return None
+
+        self._ensure2DTilesetPlacementCache()
+        if not self._map2DModelToTileId and not self._map2DGroupByModel:
+            return None
+
+        section = str(selection.getSectionName() or '')
+        tile_id = self._map2DModelToTileId.get(resref)
+        if section != 'Groups' and tile_id is not None:
+            return {
+                'kind': 'tile',
+                'name': selection.getName(),
+                'tile_id': int(tile_id),
+                'orientation': int(self.map2DTileOrientation) % 4,
+            }
+
+        group = self._map2DGroupByModel.get(resref)
+        if group is not None:
+            return {
+                'kind': 'group',
+                'name': selection.getName(),
+                'rows': int(group['rows']),
+                'cols': int(group['cols']),
+                'tile_ids': list(group['tile_ids']),
+                'orientation': int(self.map2DTileOrientation) % 4,
+            }
+
+        if tile_id is not None:
+            return {
+                'kind': 'tile',
+                'name': selection.getName(),
+                'tile_id': int(tile_id),
+                'orientation': int(self.map2DTileOrientation) % 4,
+            }
+        return None
+
+    def _apply2DRealTilePaintAt(self, x, y):
+        if not self.area:
+            return False
+        selection = self._resolve2DTileSelection()
+        if selection is None:
+            return False
+
+        replacements = []
+        if selection['kind'] == 'group':
+            base_tx, base_ty = self._get2DAreaTileCoord(x, y)
+            for dx, dy, tile_id, orient in Module._rotated_group_cells(
+                    selection['rows'], selection['cols'], selection['tile_ids'], selection['orientation']):
+                tx = base_tx + dx
+                ty = base_ty + dy
+                if tx < 0 or ty < 0 or tx >= self.area.getWidth() or ty >= self.area.getHeight():
+                    continue
+                replacements.append((ty * self.area.getWidth() + tx, int(tile_id), int(orient) % 4))
+        else:
+            changed_tiles = set()
+            base = self._get2DCellKey(x, y)
+            for key in self._iter2DBrushCells(base):
+                changed_tiles.add(self._get2DCellAreaTileCoord(key))
+            for tx, ty in sorted(changed_tiles):
+                replacements.append((ty * self.area.getWidth() + tx,
+                                     int(selection['tile_id']),
+                                     int(selection['orientation']) % 4))
+
+        if not replacements:
+            return False
+
+        frame = wx.GetTopLevelParent(self)
+        if not frame or not hasattr(frame, 'applyAreaTileEdits'):
+            return False
+        changed = frame.applyAreaTileEdits(self.area, replacements, self)
+        if changed:
+            self.setStatus('2D tile paint: %s (%d°)' % (selection['name'], selection['orientation'] * 90))
+        return bool(changed)
+
     def _ensure2DCell(self, cell_key):
         if cell_key not in self.map2DCells:
             self.map2DCells[cell_key] = {
@@ -2572,6 +2758,9 @@ void main() {
         return self.map2DCells[cell_key]
 
     def _apply2DDrawAt(self, x, y, evt):
+        if not evt.ControlDown() and not evt.AltDown() and not evt.ShiftDown():
+            if self._apply2DRealTilePaintAt(x, y):
+                return
         base = self._get2DCellKey(x, y)
         for key in self._iter2DBrushCells(base):
             cell = self._ensure2DCell(key)
@@ -2585,6 +2774,7 @@ void main() {
                 cell['terrain'] = self.map2DTerrainBrush
                 cell['asset'] = self.map2DAssetBrush
         self._save2DDraftForCurrentArea()
+        self._notify2DDraftChanged()
 
     def _cycle2DAssetAt(self, x, y):
         key = self._get2DCellKey(x, y)
@@ -2592,6 +2782,7 @@ void main() {
         cell['asset'] = (int(cell.get('asset', 0)) + 1) % 5
         self.setStatus('2D asset @%d,%d: %s' % (key[0], key[1], self._get2DAssetName(cell['asset'])))
         self._save2DDraftForCurrentArea()
+        self._notify2DDraftChanged()
 
     def _get2DDraftPath(self):
         repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -2720,6 +2911,18 @@ void main() {
             return
         self.map2DCells = self._deserialize2DCells(payload)
 
+    def _notify2DDraftChanged(self):
+        area = self.area
+        if not area:
+            return
+        frame = wx.GetTopLevelParent(self)
+        if not frame or not hasattr(frame, 'syncArea2DDraft'):
+            return
+        try:
+            frame.syncArea2DDraft(area, self)
+        except Exception:
+            logger.debug('failed to sync 2D draft between map views', exc_info=True)
+
     def _save2DDraftForCurrentArea(self):
         key = self._get2DDraftAreaKey(self.area)
         if not key:
@@ -2772,6 +2975,7 @@ void main() {
                 payload = json.load(f)
             self.map2DCells = self._deserialize2DCells(payload)
             self._save2DDraftForCurrentArea()
+            self._notify2DDraftChanged()
             self.setStatus('2D draft imported: %s' % os.path.basename(path))
             return True
         except Exception:
@@ -2879,15 +3083,19 @@ void main() {
         if not show:
             return []
         lines = [
-            '2D Draw: LMB paint | Ctrl+LMB raise | Alt+LMB lower | Shift+LMB toggle block',
+            '2D Draw: LMB stamp selected tile | Ctrl+LMB raise | Alt+LMB lower | Shift+LMB toggle block',
             'RMB cycle asset at cell | Wheel +/- brush radius | C clear | X export | I import',
-            'T terrain=%s  U asset=%s  G grid=%s  O occlusion=%s  Radius=%d  V layers'
+            'T terrain=%s  U asset=%s  R rot=%d°  G grid=%s  O occlusion=%s  Radius=%d'
             % (self._get2DTerrainName(self.map2DTerrainBrush),
                self._get2DAssetName(self.map2DAssetBrush),
-                    'on' if self.layerVisibility.get('showGrid', self.map2DShowGrid) else 'off',
+               self.map2DTileOrientation * 90,
+               'on' if self.layerVisibility.get('showGrid', self.map2DShowGrid) else 'off',
                'on' if self.map2DShowOcclusion else 'off',
                self.map2DBrushRadius)
         ]
+        selection = self._resolve2DTileSelection()
+        if selection is not None:
+            lines.append('Selected tile: %s [%s]' % (selection['name'], selection['kind']))
         return lines
 
     def _queueCoreTextOverlays(self):
@@ -4154,6 +4362,76 @@ void main() {
     def start_standalone(cls):
         cls.app.MainLoop()
     start_standalone = classmethod(start_standalone)
+
+
+class TopDownMapWindow(MapWindow):
+    """A dedicated top-down map page that keeps camera pitch locked.
+
+    This reuses the full MapWindow pipeline while presenting a stable 2D-style
+    overhead view for planning and layout work.
+    """
+
+    def __init__(self, parent):
+        MapWindow.__init__(self, parent)
+        self._topDownLocked = True
+        self.mode = ToolPalette.MAP2D_DRAW_TOOL
+        self.map2DShowGrid = True
+        self._applyTopDownCamera()
+
+    def OnMouseDown(self, evt):
+        self.lastX = evt.GetX()
+        self.lastY = self.height - evt.GetY()
+        MapWindow.OnMouseDown(self, evt)
+
+    def _applyTopDownCamera(self):
+        # Keep camera looking straight down while preserving zoom/pan behavior.
+        self.viewAngleSky = 89.999
+        self.viewAngleFloor = 90.0
+        self.lookingAtZ = 0.0
+        self.recomputeCamera()
+
+    def setArea(self, area):
+        MapWindow.setArea(self, area)
+        self._applyTopDownCamera()
+
+    def toolSelected(self, evt):
+        MapWindow.toolSelected(self, evt)
+        self._applyTopDownCamera()
+
+    def adjustViewAngle(self, floorAdjust, skyAdjust):
+        # Lock orbiting for this view; keep pan/zoom active.
+        if getattr(self, '_topDownLocked', False):
+            self._applyTopDownCamera()
+            self.requestRedraw()
+            return
+        MapWindow.adjustViewAngle(self, floorAdjust, skyAdjust)
+
+    def OnMouseMotion(self, evt):
+        if not self.area or not self.preprocessed or self.preprocessing:
+            return
+
+        currentX = evt.GetX()
+        currentY = self.height - evt.GetY()
+
+        # In top-down mode, right-drag and middle-drag pan instead of orbiting.
+        if evt.Dragging() and not self.beingDragged:
+            dx = float(currentX - self.lastX)
+            dy = float(currentY - self.lastY)
+            if evt.RightIsDown() or evt.MiddleIsDown() or (evt.LeftIsDown() and evt.AltDown()):
+                self.adjustPos(dy * 0.08, -dx * 0.08)
+                self.lastX = currentX
+                self.lastY = currentY
+                return
+
+        MapWindow.OnMouseMotion(self, evt)
+
+    def OnMouseWheel(self, evt):
+        # Default wheel behavior in the 2D tab is zoom. Hold Ctrl/Cmd or Alt
+        # to adjust the 2D brush radius instead.
+        if evt.ControlDown() or evt.CmdDown() or evt.AltDown():
+            MapWindow.OnMouseWheel(self, evt)
+            return
+        GLWindow.OnMouseWheel(self, evt)
     
 
 if __name__ == "__main__":

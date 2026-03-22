@@ -374,6 +374,9 @@ class ToolFrame(wx.MiniFrame):
             self.notebook.RemovePage(self.tilesetPalettePageIndex)
             self.tilesetPaletteWindow = None
             self.tilesetPalettePageIndex = None
+
+    def _isTilesetTileSelection(self, data):
+        return bool(data and hasattr(data, 'getSectionName') and hasattr(data, 'getResRef'))
         
     
     def toggleToolOn(self,id):
@@ -396,6 +399,17 @@ class ToolFrame(wx.MiniFrame):
                     newEvent.setData(bp.toInstance())
                 except Exception as e:
                     logger.warning('failed to create paint instance from blueprint: %s', e)
+        if id == self.map2dId:
+            active = self.getActivePaletteWindow()
+            if hasattr(active, 'GetSelection') and hasattr(active, 'GetItemData'):
+                try:
+                    selected_item = active.GetSelection()
+                    if selected_item and selected_item.IsOk():
+                        selected_data = active.GetItemData(selected_item)
+                        if self._isTilesetTileSelection(selected_data):
+                            newEvent.setData(selected_data)
+                except Exception as e:
+                    logger.warning('failed to resolve 2D tool selection: %s', e)
         self.GetEventHandler().AddPendingEvent(newEvent)        
 
     def onPalettePageChanged(self,event):
@@ -403,11 +417,17 @@ class ToolFrame(wx.MiniFrame):
         # not reused when switching to creatures/doors/etc.
         if self.toolbar.GetToolState(self.paintId):
             self.toggleToolOn(self.paintId)
+        elif self.toolbar.GetToolState(self.map2dId) and self.getActivePaletteWindow() == self.tilesetPaletteWindow:
+            self.toggleToolOn(self.map2dId)
         event.Skip()
             
     def treeItemSelected(self,event):
-        if self.getActivePaletteWindow().GetItemData(event.GetItem()):
-            self.toggleToolOn(self.paintId)
+        data = self.getActivePaletteWindow().GetItemData(event.GetItem())
+        if data:
+            if self._isTilesetTileSelection(data):
+                self.toggleToolOn(self.map2dId)
+            else:
+                self.toggleToolOn(self.paintId)
         event.Skip()
 
     def getSelectedBlueprint(self):

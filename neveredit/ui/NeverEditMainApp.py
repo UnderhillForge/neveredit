@@ -1,5 +1,7 @@
 """Main neveredit application class."""
 
+import copy
+
 from neveredit.util import Loggers
 import logging
 logger = logging.getLogger("neveredit")
@@ -35,6 +37,7 @@ from neveredit.game.Factions import Factions,FactionStruct
 from neveredit.game.Sound import SoundBP
 from neveredit.game.Trigger import TriggerBP
 from neveredit.game.Encounter import EncounterBP
+from neveredit.game.Tile import Tile
 from neveredit.ui import MapWindow
 from neveredit.ui import ConversationWindow
 from neveredit.ui import ModelWindow
@@ -165,6 +168,7 @@ are on Linux/MacOS. -mrunderhill</p>
         self.fileChanged = False
 
         self.map = None
+        self.map2d = None
         self.model = None
         self.helpviewer = None
         
@@ -340,9 +344,10 @@ are on Linux/MacOS. -mrunderhill</p>
             self._restoreWindowState(self.toolPalette, 'ToolPaletteState', (220, 320))
             self._trackWindowState(self.toolPalette, 'ToolPaletteState', (220, 320))
             self.toolPalette._restored_state = True
-            if self.map:
+            active_map = self.map if self.map else self.map2d
+            if active_map:
                 ToolPalette.EVT_TOOLSELECTION(self.toolPalette,
-                                              self.map.toolSelected)
+                                              active_map.toolSelected)
         self.toolPalette.Raise()
 
     def showShaderWindow(self):
@@ -433,29 +438,31 @@ are on Linux/MacOS. -mrunderhill</p>
         self.prefs['RenderLiveTuning'] = live_values
         self.prefs['RenderDepthLOD'] = depth_values
 
-    def _applyRenderPreferencesToMap(self):
-        if not self.map:
+    def _applyRenderPreferencesToMap(self, map_window=None):
+        if map_window is None:
+            map_window = self.map
+        if not map_window:
             return
         self._ensureRenderPreferenceDefaults()
         live_values = self.prefs['RenderLiveTuning']
         depth_values = self.prefs['RenderDepthLOD']
 
-        self.map.toonShading = bool(live_values.get('ToonEnabled', False))
-        self.map.coreToonBands = float(live_values.get('ToonBands', 7.0))
-        self.map.coreToonRimStrength = float(live_values.get('ToonRimStrength', 0.28))
-        self.map.coreDistanceDesatStrength = float(live_values.get('DistanceDesatStrength', 0.12))
+        map_window.toonShading = bool(live_values.get('ToonEnabled', False))
+        map_window.coreToonBands = float(live_values.get('ToonBands', 7.0))
+        map_window.coreToonRimStrength = float(live_values.get('ToonRimStrength', 0.28))
+        map_window.coreDistanceDesatStrength = float(live_values.get('DistanceDesatStrength', 0.12))
 
-        self.map.coreFogEnabled = bool(depth_values.get('FogEnabled', True))
-        self.map.coreFogNearDistance = float(depth_values.get('FogNearDistance', 120.0))
-        self.map.coreFogFarDistance = float(depth_values.get('FogFarDistance', 250.0))
-        self.map.coreTileLodDistance = float(depth_values.get('TileLodDistance', 140.0))
-        self.map.coreThingLodDistance = float(depth_values.get('ThingLodDistance', 110.0))
-        self.map.coreSmallThingLodDistance = float(depth_values.get('SmallThingLodDistance', 80.0))
-        self.map.coreDecorCullDistance = float(depth_values.get('DecorCullDistance', 210.0))
-        self.map.coreLodDistance = max(self.map.coreTileLodDistance, self.map.coreThingLodDistance)
+        map_window.coreFogEnabled = bool(depth_values.get('FogEnabled', True))
+        map_window.coreFogNearDistance = float(depth_values.get('FogNearDistance', 120.0))
+        map_window.coreFogFarDistance = float(depth_values.get('FogFarDistance', 250.0))
+        map_window.coreTileLodDistance = float(depth_values.get('TileLodDistance', 140.0))
+        map_window.coreThingLodDistance = float(depth_values.get('ThingLodDistance', 110.0))
+        map_window.coreSmallThingLodDistance = float(depth_values.get('SmallThingLodDistance', 80.0))
+        map_window.coreDecorCullDistance = float(depth_values.get('DecorCullDistance', 210.0))
+        map_window.coreLodDistance = max(map_window.coreTileLodDistance, map_window.coreThingLodDistance)
 
         try:
-            self.map.requestRedraw()
+            map_window.requestRedraw()
         except Exception:
             pass
 
@@ -1159,7 +1166,32 @@ are on Linux/MacOS. -mrunderhill</p>
         '''handle the addition of a new item to the map'''
         self.unselectTreeItem()
         self.tree.DeleteChildren(self.lastAreaItem)
-        self.subtreeFromArea(self.lastAreaItem,self.map.getArea())
+        active_map = self.map if self.map else self.map2d
+        if active_map:
+            self.subtreeFromArea(self.lastAreaItem, active_map.getArea())
+        
+        # Keep both map views in lockstep. We intentionally refresh any map
+        # that is initialized and attached to the same Area instance.
+        shared_area = None
+        for candidate in (self.map, self.map2d):
+            if candidate and getattr(candidate, 'area', None) is not None:
+                shared_area = candidate.area
+                break
+        if shared_area is not None:
+            for map_view in (self.map, self.map2d):
+                if map_view is None:
+                    continue
+                if getattr(map_view, 'area', None) is not shared_area:
+                    continue
+                if getattr(map_view, 'triggers', None) is None:
+                    continue
+                try:
+                    map_view.refreshThingList()
+                    map_view.makeQuadTree()
+                    map_view.requestRedraw()
+                except Exception as e:
+                    logger.warning(f'Failed to sync map view after thing add: {e}')
+        
         selected_id = event.getSelectedId()
         if selected_id is not None:
             self.selectThisItem = selected_id
@@ -1345,7 +1377,7 @@ are on Linux/MacOS. -mrunderhill</p>
         if not data and not area:
             return
         if not self.notebook.doesCurrentPageNeedSync():
-            if tag == 'map' and self.toolPalette:
+            if tag in ('map', 'map2d') and self.toolPalette:
                 self.toolPalette.GetToolBar().Enable(True)
             else:
                 self.toolPalette.GetToolBar().Enable(False)
@@ -1354,15 +1386,17 @@ are on Linux/MacOS. -mrunderhill</p>
         self.notebook.SetEvtHandlerEnabled(False)
         if self.toolPalette:
             self.toolPalette.GetToolBar().Enable(False)
-        if tag == 'map':
-            self.map.setArea(area)
-            MapWindow.EVT_MAPSINGLESELECTION(self.map,
-                                             self.OnMapSelection)
-            MapWindow.EVT_MAPMOVE(self.map,self.OnMapMove)
-            self.map.Bind(MapWindow.EVT_MAPTHINGADDED, self.OnMapThingAdded)
-            if self.toolPalette:
+        if tag in ('map', 'map2d'):
+            target_map = self.map if tag == 'map' else self.map2d
+            if target_map is not None:
+                target_map.setArea(area)
+                MapWindow.EVT_MAPSINGLESELECTION(target_map,
+                                                 self.OnMapSelection)
+                MapWindow.EVT_MAPMOVE(target_map, self.OnMapMove)
+                target_map.Bind(MapWindow.EVT_MAPTHINGADDED, self.OnMapThingAdded)
+            if self.toolPalette and target_map is not None:
                 ToolPalette.EVT_TOOLSELECTION(self.toolPalette,
-                                              self.map.toolSelected)
+                                              target_map.toolSelected)
                 self.toolPalette.GetToolBar().Enable(True)
                 # Update tileset palette based on the area's tileset
                 if area:
@@ -1380,13 +1414,98 @@ are on Linux/MacOS. -mrunderhill</p>
                         logger.warning(f'Error updating tileset palette: {e}')
                 else:
                     self.toolPalette.setActiveTileset(None)
-                if data:
-                    self.map.selectThingById(data.getNevereditId())
+                if data and target_map is not None:
+                    target_map.selectThingById(data.getNevereditId())
         elif tag == 'model':
             self.model.setModel(data.getModel(True))
         self.notebook.setCurrentPageSync(False)
         self.SetEvtHandlerEnabled(True)
         self.notebook.SetEvtHandlerEnabled(True)
+
+    def _teardownNotebookMapPage(self, page_tag, attr_name):
+        map_page = self.notebook.getPageByTag(page_tag)
+        map_window = getattr(self, attr_name, None)
+        if map_window is None:
+            map_window = map_page
+        if map_window is None:
+            return
+
+        logger.info(f"[TREE_SEL] Deleting {page_tag}")
+        sys.stdout.flush()
+        setattr(self, attr_name, None)
+
+        try:
+            logger.info(f"[TREE_SEL] Disabling animations ({page_tag})...")
+            sys.stdout.flush()
+            map_window.animationsEnabled = False
+            logger.info(f"[TREE_SEL] Animations disabled ({page_tag})")
+            sys.stdout.flush()
+        except Exception as e:
+            logger.error(f"[TREE_SEL] Animation disable error ({page_tag}): {e}")
+            sys.stdout.flush()
+
+        try:
+            logger.info(f"[TREE_SEL] Stopping timer ({page_tag})...")
+            sys.stdout.flush()
+            if hasattr(map_window, '_stopAnimationTimer'):
+                map_window._stopAnimationTimer()
+            logger.info(f"[TREE_SEL] Timer stopped ({page_tag})")
+            sys.stdout.flush()
+        except Exception as e:
+            logger.error(f"[TREE_SEL] Timer stop error ({page_tag}): {e}")
+            sys.stdout.flush()
+
+        try:
+            logger.info(f"[TREE_SEL] Processing pending events ({page_tag})...")
+            sys.stdout.flush()
+            wx.GetApp().ProcessPendingEvents()
+            logger.info(f"[TREE_SEL] Pending events processed ({page_tag})")
+            sys.stdout.flush()
+        except Exception as e:
+            logger.error(f"[TREE_SEL] ProcessPendingEvents error ({page_tag}): {e}")
+            sys.stdout.flush()
+
+        try:
+            logger.info(f"[TREE_SEL] Calling setArea(None) ({page_tag})...")
+            sys.stdout.flush()
+            map_window.setArea(None)
+            logger.info(f"[TREE_SEL] setArea(None) OK ({page_tag})")
+            sys.stdout.flush()
+        except Exception as e:
+            logger.error(f"[TREE_SEL] setArea(None) error ({page_tag}): {e}")
+            sys.stdout.flush()
+
+        try:
+            logger.info(f"[TREE_SEL] Forcing map teardown ({page_tag})...")
+            sys.stdout.flush()
+            if hasattr(map_window, '_teardownMapWindow'):
+                map_window._teardownMapWindow()
+            logger.info(f"[TREE_SEL] Map teardown complete ({page_tag})")
+            sys.stdout.flush()
+        except Exception as e:
+            logger.error(f"[TREE_SEL] _teardownMapWindow error ({page_tag}): {e}")
+            sys.stdout.flush()
+
+        try:
+            logger.info(f"[TREE_SEL] Removing page from notebook ({page_tag})...")
+            sys.stdout.flush()
+            if self.notebook.getPageByTag(page_tag):
+                self.notebook.deletePageByTag(page_tag)
+            logger.info(f"[TREE_SEL] Page removed from notebook ({page_tag})")
+            sys.stdout.flush()
+        except Exception as e:
+            logger.error(f"[TREE_SEL] deletePageByTag error ({page_tag}): {e}")
+            sys.stdout.flush()
+
+        try:
+            logger.info(f"[TREE_SEL] Processing pending events post-delete ({page_tag})...")
+            sys.stdout.flush()
+            wx.GetApp().ProcessPendingEvents()
+            logger.info(f"[TREE_SEL] Post-delete events processed ({page_tag})")
+            sys.stdout.flush()
+        except Exception as e:
+            logger.error(f"[TREE_SEL] post-delete ProcessPendingEvents error ({page_tag}): {e}")
+            sys.stdout.flush()
 
     def treeSelChanged(self,event):
         '''Callback to handle the user changing the selection
@@ -1403,7 +1522,7 @@ are on Linux/MacOS. -mrunderhill</p>
         data = self.tree.GetItemData(self.selectedTreeItem)
         notebookSelection = self.notebook.GetSelection()
         area = self.getAreaForTreeItem(self.selectedTreeItem)
-        logger.info(f"[TREE_SEL] area={area is not None}, has_map={bool(self.notebook.getPageByTag('map'))}")
+        logger.info(f"[TREE_SEL] area={area is not None}, has_map={bool(self.notebook.getPageByTag('map'))}, has_map2d={bool(self.notebook.getPageByTag('map2d'))}")
         sys.stdout.flush()
         self.editmenu.Enable(self.ID_AREA_PROPS, bool(area))
         self.toolsmenu.Enable(self.ID_REROLL_AREA_BORDER, bool(area))
@@ -1419,90 +1538,23 @@ are on Linux/MacOS. -mrunderhill</p>
             self.notebook.AddPage(self.map, _('Map'), 'map')
             self.map.setProgressDisplay(self)
             self._applyShaderPreferences(self.map.shader_manager)
-            self._applyRenderPreferencesToMap()
+            self._applyRenderPreferencesToMap(self.map)
             self._connectShaderWindow()
             logger.info(f"[TREE_SEL] Map created OK")
             sys.stdout.flush()
-        elif not area and self.notebook.getPageByTag('map'):
-            logger.info(f"[TREE_SEL] Deleting map")
+        if area and not self.notebook.getPageByTag('map2d'):
+            logger.info(f"[TREE_SEL] Creating map2d")
             sys.stdout.flush()
-            old_map = self.map
-            self.map = None
-            # Disable animations BEFORE anything else
-            try:
-                logger.info(f"[TREE_SEL] Disabling animations...")
-                sys.stdout.flush()
-                old_map.animationsEnabled = False
-                logger.info(f"[TREE_SEL] Animations disabled")
-                sys.stdout.flush()
-            except Exception as e:
-                logger.error(f"[TREE_SEL] Animation disable error: {e}")
-                sys.stdout.flush()
-            # Stop timer synchronously
-            try:
-                logger.info(f"[TREE_SEL] Stopping timer...")
-                sys.stdout.flush()
-                if hasattr(old_map, '_stopAnimationTimer'):
-                    old_map._stopAnimationTimer()
-                logger.info(f"[TREE_SEL] Timer stopped")
-                sys.stdout.flush()
-            except Exception as e:
-                logger.error(f"[TREE_SEL] Timer stop error: {e}")
-                sys.stdout.flush()
-            # CRITICAL: Process all pending deferred callbacks (wx.CallAfter)
-            # before destroying the map. This flushes any pending requestRedraw()
-            # calls that might otherwise try to access the dying map widget.
-            try:
-                logger.info(f"[TREE_SEL] Processing pending events...")
-                sys.stdout.flush()
-                wx.GetApp().ProcessPendingEvents()
-                logger.info(f"[TREE_SEL] Pending events processed")
-                sys.stdout.flush()
-            except Exception as e:
-                logger.error(f"[TREE_SEL] ProcessPendingEvents error: {e}")
-                sys.stdout.flush()
-            try:
-                logger.info(f"[TREE_SEL] Calling setArea(None)...")
-                sys.stdout.flush()
-                old_map.setArea(None)
-                logger.info(f"[TREE_SEL] setArea(None) OK")
-                sys.stdout.flush()
-            except Exception as e:
-                logger.error(f"[TREE_SEL] setArea(None) error: {e}")
-                sys.stdout.flush()
-            # Force map-specific teardown now so listeners/callback state is
-            # cleared before we potentially create a replacement map page.
-            try:
-                logger.info(f"[TREE_SEL] Forcing map teardown...")
-                sys.stdout.flush()
-                if hasattr(old_map, '_teardownMapWindow'):
-                    old_map._teardownMapWindow()
-                logger.info(f"[TREE_SEL] Map teardown complete")
-                sys.stdout.flush()
-            except Exception as e:
-                logger.error(f"[TREE_SEL] _teardownMapWindow error: {e}")
-                sys.stdout.flush()
-            # CRITICAL: Remove from notebook BEFORE destroying the widget
-            # deletePageByTag already destroys the widget, so DON'T call Destroy()
-            try:
-                logger.info(f"[TREE_SEL] Removing page from notebook...")
-                sys.stdout.flush()
-                self.notebook.deletePageByTag('map')
-                logger.info(f"[TREE_SEL] Page removed from notebook")
-                sys.stdout.flush()
-            except Exception as e:
-                logger.error(f"[TREE_SEL] deletePageByTag error: {e}")
-                sys.stdout.flush()
-            # Let wx deliver deferred destroy notifications before continuing.
-            try:
-                logger.info(f"[TREE_SEL] Processing pending events post-delete...")
-                sys.stdout.flush()
-                wx.GetApp().ProcessPendingEvents()
-                logger.info(f"[TREE_SEL] Post-delete events processed")
-                sys.stdout.flush()
-            except Exception as e:
-                logger.error(f"[TREE_SEL] post-delete ProcessPendingEvents error: {e}")
-                sys.stdout.flush()
+            self.map2d = MapWindow.TopDownMapWindow(self.notebook)
+            self.notebook.AddPage(self.map2d, _('Map 2D'), 'map2d')
+            self.map2d.setProgressDisplay(self)
+            self._applyShaderPreferences(self.map2d.shader_manager)
+            self._applyRenderPreferencesToMap(self.map2d)
+            logger.info(f"[TREE_SEL] Map2D created OK")
+            sys.stdout.flush()
+        elif not area and (self.notebook.getPageByTag('map') or self.notebook.getPageByTag('map2d')):
+            self._teardownNotebookMapPage('map', 'map')
+            self._teardownNotebookMapPage('map2d', 'map2d')
             if self.toolPalette:
                 self.toolPalette.setActiveTileset(None)
             self._connectShaderWindow()
@@ -1553,6 +1605,8 @@ are on Linux/MacOS. -mrunderhill</p>
             self.notebook.SetSelection(notebookSelection)
         elif self.notebook.getPageByTag('map'):
             self.notebook.selectPageByTag('map')
+        elif self.notebook.getPageByTag('map2d'):
+            self.notebook.selectPageByTag('map2d')
         elif page_count > 0:
             self.notebook.SetSelection(0)
 
@@ -1790,9 +1844,10 @@ Copyright 2003-2006'''),
             self.Show(True)
             self.Raise()
         elif id == self.ID_MAP_LAYER_WINDOW_MITEM:
-            if self.map:
-                self.map.showMapLayersWindow()
-                self.map.Raise()
+            active_map = self.map if self.map else self.map2d
+            if active_map:
+                active_map.showMapLayersWindow()
+                active_map.Raise()
             else:
                 self.SetStatusText(_('Map Layer window is available when an area map is open.'))
         elif id == self.ID_PALETTE_WINDOW_MITEM:
@@ -1974,6 +2029,8 @@ Copyright 2003-2006'''),
             area = self.getAreaForTreeItem(self.selectedTreeItem)
         if not area and self.map:
             area = self.map.getArea()
+        if not area and self.map2d:
+            area = self.map2d.getArea()
         return area
 
     def _refreshAreaAfterTileMutation(self, area):
@@ -1985,6 +2042,95 @@ Copyright 2003-2006'''),
             self.map.setArea(None)
             self.map.setArea(area)
             self.map.requestRedraw()
+        if self.map2d and self.map2d.getArea() == area:
+            self.map2d.setArea(None)
+            self.map2d.setArea(area)
+            self.map2d.requestRedraw()
+
+    def syncArea2DDraft(self, area, source_map=None):
+        if area is None:
+            return
+        source_cells = None
+        if source_map is not None:
+            source_cells = copy.deepcopy(getattr(source_map, 'map2DCells', {}))
+        for candidate in [self.map, self.map2d]:
+            if not candidate or candidate == source_map:
+                continue
+            if candidate.getArea() != area:
+                continue
+            try:
+                if source_cells is None:
+                    candidate._load2DDraftForArea(area)
+                else:
+                    candidate.map2DCells = copy.deepcopy(source_cells)
+                candidate.requestRedraw()
+            except Exception:
+                logger.warning('failed to sync 2D draft to sibling map view', exc_info=True)
+
+    def applyAreaTileEdits(self, area, replacements, source_map=None):
+        if area is None or not replacements:
+            return False
+
+        try:
+            area.readTiles()
+        except Exception:
+            logger.warning('failed to read area tiles before applying edit', exc_info=True)
+            return False
+
+        tileset = area.getTileSet()
+        if tileset is None:
+            return False
+
+        are_struct = area.getGFFStruct('are')
+        if are_struct is None:
+            return False
+        tile_structs = are_struct.getInterpretedEntry('Tile_List') or []
+        if not tile_structs:
+            return False
+
+        normalized = {}
+        for index, tile_id, orientation in replacements:
+            try:
+                normalized[int(index)] = (int(tile_id), int(orientation) % 4)
+            except Exception:
+                continue
+
+        changed_indices = []
+        for index, payload in list(normalized.items()):
+            if index < 0 or index >= len(tile_structs):
+                continue
+
+            tile_id, orientation = payload
+            current_tile = area.tileList[index] if area.tileList and index < len(area.tileList) else None
+            if current_tile is not None:
+                try:
+                    current_id = int(current_tile.getId())
+                    current_orientation = int(current_tile['Tile_Orientation']) % 4
+                    if current_id == tile_id and current_orientation == orientation:
+                        continue
+                except Exception:
+                    pass
+
+            Module.Module._apply_tile_to_struct(tile_structs[index], tile_id, orientation)
+            area.tileList[index] = Tile(tileset, tile_structs[index])
+            changed_indices.append(index)
+
+        if not changed_indices:
+            return False
+
+        changed_indices.sort()
+        for map_window in [self.map, self.map2d]:
+            if not map_window or map_window.getArea() != area:
+                continue
+            try:
+                map_window.refreshChangedTiles(changed_indices)
+            except Exception:
+                logger.warning('failed to refresh map view after tile edit', exc_info=True)
+
+        if getattr(self, 'module', None):
+            self.module.needSave = True
+        self.setFileChanged(True)
+        return True
 
     def _rerollPerimeterSceneLifeForArea(self, area):
         if area is None:
