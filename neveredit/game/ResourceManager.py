@@ -281,7 +281,12 @@ class ResourceManager(Progressor,VisualChangeNotifier,ResourceListChangeNotifier
             resource = neveredit.file.TwoDAFile.TwoDAFile()
             resource.fromFile(io.StringIO(data.decode('latin1')))
         elif extension in ('TGA', 'DDS'):
-            resource = Image.open(io.BytesIO(data))
+            try:
+                resource = Image.open(io.BytesIO(data))
+            except Exception:
+                logger.debug('cannot decode image resource %s (%d bytes)',
+                             ResourceManager.nameFromKey(key), len(data) if data else 0)
+                return None
         elif extension == 'PLT':
             resource = self.decodePLT(data)
         elif extension == 'MDL':

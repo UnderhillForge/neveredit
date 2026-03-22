@@ -1,5 +1,9 @@
 """Classes to deal with change notification."""
 
+import logging
+
+logger = logging.getLogger('neveredit')
+
 Set = set
 
 class VisualChangeListener:

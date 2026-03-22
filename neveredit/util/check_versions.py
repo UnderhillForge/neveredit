@@ -24,17 +24,10 @@ except:
     failed = True
 try:
     Numeric = Utils.getNumPy()
-    if Utils.use_numeric:
-        logger.info( 'Numeric version: %s' % Numeric.__version__ )
-    else:
-            logger.info( 'numarray version: %s' % Numeric.__version__ )    
-except:
-    if Utils.use_numeric:
-            logger.error( "couldn't import the Numeric package - please install Numeric", 
-                      exc_info = True)
-    else:
-            logger.error( "couldn't import the numarray package - please install numarray", 
-                      exc_info = True)
+    logger.info( 'numpy version: %s' % Numeric.__version__ )
+except Exception:
+    logger.error( "couldn't import numpy package - please install numpy",
+                  exc_info = True)
     failed = True
 try:
     import OpenGL

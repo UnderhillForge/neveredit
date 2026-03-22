@@ -2,6 +2,7 @@ import logging
 logger = logging.getLogger("neveredit.file")
 
 import sys,os
+import tempfile
 import pprint
 import time
 
@@ -205,6 +206,15 @@ class ERFFile(NeverFile):
         entryList.sort()
         for e in entryList:
             k = e[1]
+            if k is None:
+                logger.error('ERROR: None entry in resource list at ID %s', e[0])
+                logger.error('Entries in entriesByNameAndType: %s', len(self.entriesByNameAndType))
+                raise ValueError('Invalid entry (None) in resource list')
+            if k.offset is None or k.size is None:
+                logger.error("Entry '%s' type %s has offset=%s, size=%s",
+                             k.name, k.type, k.offset, k.size)
+                raise ValueError("Entry '%s' was not properly written (missing offset/size)"
+                                 % k.getPrintableName())
             self.dataHandler.writeIntFile(k.offset,self.writeFileHandle)
             self.dataHandler.writeIntFile(k.size,self.writeFileHandle)
     
@@ -283,10 +293,9 @@ class ERFFile(NeverFile):
         """this method simulates writing back out to the file that this ERF
         file was read from. It actually writes a temp file, then moves this
         file to overwrite the old read file."""
-        #the next line generates a warning, but I don't know how to
-        #do the following
-        #rename with tmpfile
-        tmp = os.tmpnam()
+        # Write to a named temporary file first, then replace the original.
+        fd, tmp = tempfile.mkstemp(prefix='neveredit_erf_', suffix='.tmp')
+        os.close(fd)
         self.toFile(tmp)
         self.close()
         print('renaming',self.writeFileHandle.name,self.readFileHandle.name)
@@ -364,6 +373,18 @@ class ERFFile(NeverFile):
         self.addResource(key,r)
         
     def addResource(self,key,r):
+        # Check if this key already exists - if so, remove it from entriesByType first
+        if key in self.entriesByNameAndType:
+            old_entry = self.entriesByNameAndType[key]
+            old_type = old_entry.type
+            # Remove old entry from entriesByType list
+            if old_type in self.entriesByType:
+                self.entriesByType[old_type] = [
+                    e for e in self.entriesByType[old_type] 
+                    if not (e.name == old_entry.name and e.type == old_entry.type)
+                ]
+        
+        # Create new entry
         entry = ERFKey()
         if key in self.entriesByNameAndType:
             entry.id = self.entriesByNameAndType[key].id
@@ -372,8 +393,13 @@ class ERFFile(NeverFile):
         entry.name = key[0]
         entry.type = key[1]
         entry.contents = r
+        
+        # Add to both dictionaries
         self.entriesByNameAndType[key] = entry
-        self.entriesByType[key[1]] = entry
+        if key[1] in self.entriesByType:
+            self.entriesByType[key[1]].append(entry)
+        else:
+            self.entriesByType[key[1]] = [entry]
         
     def close(self):
         """close all the read and write file this class might have opened."""
@@ -517,7 +543,10 @@ class ERFFile(NeverFile):
         return self.getRawEntryContents(self.getEntryByNameAndExtension(key[0],
                                                                      extension))
     def infoStr(self):
-        s = 'erf type/version: ' + repr(self.type) + '/' + self.version + '\n'
+        version = self.version
+        if isinstance(version, bytes):
+            version = version.decode('latin1', 'ignore').strip('\0')
+        s = 'erf type/version: ' + repr(self.type) + '/' + str(version) + '\n'
         s += 'build year/day: ' + repr(self.buildYear + 1900) + '/' + repr(self.buildDay) + '\n'
         s += 'header size: ' + repr(self.offsetToLocalizedString) + '\n'
         s += 'erf description in ' + repr(self.languageCount) + ' languages, using '\

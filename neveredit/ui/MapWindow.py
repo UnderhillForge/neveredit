@@ -3,6 +3,7 @@ logger = logging.getLogger('neveredit.ui')
 
 from neveredit.util import Utils
 Numeric = Utils.getNumPy()
+LinearAlgebra = Utils.getLinAlg()
 
 import wx
 from OpenGL.GL import *
@@ -17,6 +18,7 @@ import os
 import json
 import string
 import re
+import weakref
 Set = set
 import time
 import profile
@@ -34,6 +36,7 @@ from neveredit.game.ChangeNotification import VisualChangeListener
 from neveredit.util.Progressor import Progressor
 from neveredit.util import neverglobals
 from neveredit.util import gltf_export
+from neveredit.render.ecs import RenderWorldCache, snapshot_thing, snapshot_tile
 from neveredit.file.GFFFile import GFFStruct
 from neveredit.file import SoundSetFile
 
@@ -173,6 +176,11 @@ class TextBox:
         
 class MapWindow(GLWindow,Progressor,VisualChangeListener):
     def __init__(self,parent):
+        # Initialize render world cache BEFORE GLWindow.__init__, since GLWindow calls clearCache()
+        self._render_world_cache = RenderWorldCache()
+        self._destroyed = False
+        self._teardown_done = False
+        
         GLWindow.__init__(self, parent)
         Progressor.__init__(self)
         
@@ -254,31 +262,70 @@ class MapWindow(GLWindow,Progressor,VisualChangeListener):
         self.toPreprocess = None
         self._missingSelectionWarnings = set()
         self._missingModelWarnings = set()
-        wx.CallAfter(self._syncMapLayersWindowVisibility)
+        self.Bind(wx.EVT_WINDOW_DESTROY, self._onMapWindowDestroy)
+        wx.CallAfter(MapWindow._safeSyncMapLayersWindowVisibility, weakref.ref(self))
 
         # Toon (cel) shader
         self._toonProgram = None
         self._toonShaderFailed = False
         self.toonShading = False
+        self.coreBatchingEnabled = True
+        self.coreInstancingMinBatch = 5
+        self.coreLodDistance = 170.0
+        self.coreTileLodDistance = 140.0
+        self.coreThingLodDistance = 110.0
+        self.coreSmallThingLodDistance = 80.0
+        self.coreDecorCullDistance = 210.0
+        self.coreFogEnabled = True
+        self.coreFogNearDistance = 120.0
+        self.coreFogFarDistance = 250.0
+        self.coreDistanceDesatStrength = 0.12
+        self.coreToonBands = 7.0
+        self.coreToonRimStrength = 0.28
+        self.coreLodModelSuffixes = ('_lod', '_low', '_l')
+        self._coreLodModelCache = {}
+        self._coreLodPrepared = Set()
         
     _TOON_VERT = '''
+uniform mat4 uProjectionMatrix;
+uniform mat4 uModelViewMatrix;
+uniform mat3 uNormalMatrix;
 varying vec3 Normal;
+varying vec3 ViewDir;
 void main() {
-    Normal = normalize(gl_NormalMatrix * gl_Normal);
-    gl_Position = ftransform();
+    vec4 viewPos = uModelViewMatrix * gl_Vertex;
+    Normal = normalize(uNormalMatrix * gl_Normal);
+    ViewDir = normalize(-viewPos.xyz);
+    gl_Position = uProjectionMatrix * viewPos;
 }
 '''
     _TOON_FRAG = '''
 varying vec3 Normal;
+varying vec3 ViewDir;
 uniform vec3 LightPosition;
 void main() {
-    float intensity = dot(normalize(LightPosition), normalize(Normal));
-    vec4 color;
-    if      (intensity > 0.95) color = vec4(1.0, 1.0, 1.0, 1.0);
-    else if (intensity > 0.50) color = vec4(0.6, 0.6, 0.6, 1.0);
-    else if (intensity > 0.25) color = vec4(0.4, 0.4, 0.4, 1.0);
-    else                       color = vec4(0.2, 0.2, 0.2, 1.0);
-    gl_FragColor = color;
+    vec3 n = normalize(Normal);
+    vec3 lightDir = normalize(LightPosition);
+    vec3 viewDir = normalize(ViewDir);
+    float intensity = max(dot(lightDir, n), 0.0);
+    float rim = pow(clamp(1.0 - max(dot(n, viewDir), 0.0), 0.0, 1.0), 2.6);
+
+    vec3 ramp;
+    if      (intensity > 0.98) ramp = vec3(1.18, 1.14, 1.06);
+    else if (intensity > 0.90) ramp = vec3(1.06, 1.02, 0.96);
+    else if (intensity > 0.78) ramp = vec3(0.94, 0.89, 0.82);
+    else if (intensity > 0.62) ramp = vec3(0.82, 0.77, 0.70);
+    else if (intensity > 0.46) ramp = vec3(0.68, 0.64, 0.60);
+    else if (intensity > 0.30) ramp = vec3(0.52, 0.54, 0.58);
+    else if (intensity > 0.16) ramp = vec3(0.38, 0.41, 0.47);
+    else                       ramp = vec3(0.27, 0.30, 0.36);
+
+    vec3 base = gl_FrontMaterial.diffuse.rgb;
+    base = mix(base, vec3(dot(base, vec3(0.299, 0.587, 0.114))), 0.12);
+    vec3 color = base * ramp;
+    color += vec3(0.08, 0.07, 0.05) * rim;
+    color += vec3(0.04, 0.04, 0.05);
+    gl_FragColor = vec4(min(color, vec3(1.0)), gl_FrontMaterial.diffuse.a);
 }
 '''
 
@@ -325,11 +372,29 @@ void main() {
                 return False
             self._toonProgram = prog
         try:
-            from OpenGL.GL import glUseProgram, glGetUniformLocation, glUniform3f
+            from OpenGL.GL import (glUseProgram, glGetUniformLocation, glUniform3f,
+                                   glGetFloatv, glUniformMatrix4fv, glUniformMatrix3fv,
+                                   GL_FALSE, GL_PROJECTION_MATRIX, GL_MODELVIEW_MATRIX,
+                                   GL_NORMAL_MATRIX)
             glUseProgram(self._toonProgram)
+
+            proj = Numeric.array(glGetFloatv(GL_PROJECTION_MATRIX), 'f').reshape((4, 4))
+            model = Numeric.array(glGetFloatv(GL_MODELVIEW_MATRIX), 'f').reshape((4, 4))
+            normal = Numeric.array(glGetFloatv(GL_NORMAL_MATRIX), 'f').reshape((3, 3))
+
+            loc = glGetUniformLocation(self._toonProgram, 'uProjectionMatrix')
+            if loc >= 0:
+                glUniformMatrix4fv(loc, 1, GL_FALSE, proj.T.flatten())
+            loc = glGetUniformLocation(self._toonProgram, 'uModelViewMatrix')
+            if loc >= 0:
+                glUniformMatrix4fv(loc, 1, GL_FALSE, model.T.flatten())
+            loc = glGetUniformLocation(self._toonProgram, 'uNormalMatrix')
+            if loc >= 0:
+                glUniformMatrix3fv(loc, 1, GL_FALSE, normal.T.flatten())
+
             loc = glGetUniformLocation(self._toonProgram, 'LightPosition')
             if loc >= 0:
-                glUniform3f(loc, float(self.viewX), float(self.viewY), float(self.viewZ))
+                glUniform3f(loc, 0.38, 0.52, 0.76)
             return True
         except Exception as e:
             logger.warning('Toon shader activation failed; disabling toon mode: %s', e)
@@ -345,22 +410,113 @@ void main() {
             pass
 
     def Destroy(self):
-        self._save2DDraftForCurrentArea()
-        if self.mapLayersWindow is not None:
-            self._onMapLayersGeometryChanged(self.mapLayersWindow.getWindowGeometry())
-            self.mapLayersWindowVisible = bool(self.mapLayersWindow.IsShown())
-        self._saveLayerVisibility()
-        if self.mapLayersWindow is not None:
-            try:
-                self.mapLayersWindow.Destroy()
-            except Exception:
-                pass
-            self.mapLayersWindow = None
-        self._stopAmbientPreview()
-        neverglobals.getResourceManager().removeVisualChangeListener(self)
+        logger.info(f"[MAP] Destroy()")
+        self._teardownMapWindow()
         GLWindow.Destroy(self)
 
+    @staticmethod
+    def _safeSyncMapLayersWindowVisibility(window_ref):
+        win = window_ref()
+        if win is None:
+            return
+        try:
+            # Avoid IsBeingDeleted() calls here: during C++ teardown they can
+            # themselves race and crash. Stick to Python-side guard flags.
+            if getattr(win, '_destroyed', False):
+                return
+            win._syncMapLayersWindowVisibility()
+        except Exception:
+            # Ignore callbacks that race with window shutdown.
+            return
+
+    def _onMapWindowDestroy(self, event):
+        try:
+            if event.GetEventObject() is self:
+                self._teardownMapWindow()
+        except Exception:
+            pass
+        event.Skip()
+
+    def _teardownMapWindow(self):
+        if self._teardown_done:
+            return
+        logger.info(f"[MAP] Teardown starting")
+        sys.stdout.flush()
+        self._teardown_done = True
+        self._destroyed = True
+        # Disable animations immediately to prevent any deferred callbacks
+        logger.info(f"[MAP] Disabling animations...")
+        sys.stdout.flush()
+        self.animationsEnabled = False
+        logger.info(f"[MAP] Stopping timer...")
+        sys.stdout.flush()
+        if hasattr(self, '_stopAnimationTimer'):
+            try:
+                self._stopAnimationTimer()
+                logger.info(f"[MAP] Timer stopped")
+                sys.stdout.flush()
+            except Exception as e:
+                logger.error(f"[MAP] Timer stop failed: {e}")
+                sys.stdout.flush()
+        # CRITICAL: Process all pending deferred callbacks before any cleanup
+        # This ensures requestRedraw() calls complete safely before teardown
+        try:
+            logger.info(f"[MAP] Processing pending events...")
+            sys.stdout.flush()
+            import wx as wx_module
+            wx_module.GetApp().ProcessPendingEvents()
+            logger.info(f"[MAP] Pending events processed")
+            sys.stdout.flush()
+        except Exception as e:
+            logger.error(f"[MAP] ProcessPendingEvents error: {e}")
+            sys.stdout.flush()
+        self._save2DDraftForCurrentArea()
+        logger.info(f"[MAP] Saved 2D draft")
+        sys.stdout.flush()
+        if self.mapLayersWindow is not None:
+            try:
+                logger.info(f"[MAP] Syncing layers geometry...")
+                sys.stdout.flush()
+                self._onMapLayersGeometryChanged(self.mapLayersWindow.getWindowGeometry())
+                self.mapLayersWindowVisible = bool(self.mapLayersWindow.IsShown())
+                logger.info(f"[MAP] Layers geometry synced")
+                sys.stdout.flush()
+            except Exception as e:
+                logger.error(f"[MAP] Layers sync error: {e}")
+                sys.stdout.flush()
+        self._saveLayerVisibility()
+        logger.info(f"[MAP] Saved layer visibility")
+        sys.stdout.flush()
+        if self.mapLayersWindow is not None:
+            try:
+                logger.info(f"[MAP] Destroying mapLayersWindow...")
+                sys.stdout.flush()
+                self.mapLayersWindow.Destroy()
+                logger.info(f"[MAP] mapLayersWindow destroyed")
+                sys.stdout.flush()
+            except Exception as e:
+                logger.error(f"[MAP] mapLayersWindow.Destroy() error: {e}")
+                sys.stdout.flush()
+            self.mapLayersWindow = None
+        logger.info(f"[MAP] Stopping ambient preview...")
+        sys.stdout.flush()
+        self._stopAmbientPreview()
+        logger.info(f"[MAP] Stopped ambient preview")
+        sys.stdout.flush()
+        try:
+            logger.info(f"[MAP] Removing visual change listener...")
+            sys.stdout.flush()
+            neverglobals.getResourceManager().removeVisualChangeListener(self)
+            logger.info(f"[MAP] Visual change listener removed")
+            sys.stdout.flush()
+        except Exception as e:
+            logger.error(f"[MAP] removeVisualChangeListener error: {e}")
+            sys.stdout.flush()
+        logger.info(f"[MAP] Teardown complete")
+
     def _ensureMapLayersWindow(self):
+        if self._destroyed:
+            return None
         if self.mapLayersWindow is None:
             self.mapLayersWindow = MapLayersWindow(None,
                                                   self._onMapLayerVisibilityChanged,
@@ -378,7 +534,11 @@ void main() {
         return self.mapLayersWindow
 
     def _syncMapLayersWindowVisibility(self):
+        if self._destroyed:
+            return
         win = self._ensureMapLayersWindow()
+        if win is None:
+            return
         win.setLayers(self.layerVisibility)
         if self.mapLayersWindowVisible:
             if not win.IsShown():
@@ -837,10 +997,17 @@ void main() {
             # other than neveredit itself                    
             pass 
         self.dragStart = (evt.GetX(),self.height-evt.GetY())
-        self.setupCamera()
-        x,y,z = self.project(self.beingDragged.getX(),
-                             self.beingDragged.getY(),
-                             0.0)
+        if self._isCoreProfileContext():
+            _proj, _view, view_proj = self._buildCameraMatrices()
+            x, y, z = self._projectWithViewProjection((self.beingDragged.getX(),
+                                                       self.beingDragged.getY(),
+                                                       0.0),
+                                                      view_proj)
+        else:
+            self.setupCamera()
+            x,y,z = self.project(self.beingDragged.getX(),
+                                 self.beingDragged.getY(),
+                                 0.0)
         self.dragOffset = (self.dragStart[0] - x,
                            self.dragStart[1] - y)
         
@@ -904,6 +1071,11 @@ void main() {
         self.makeCurrent()
         currentX = evt.GetX()
         currentY = self.height - evt.GetY()
+
+        if getattr(self, '_core_profile_stub_mode', False):
+            if not getattr(self, '_logged_core_stub_input_warning', False):
+                logger.warning('Core profile mode: using matrix-based picking path; legacy matrix-stack interaction path disabled')
+                self._logged_core_stub_input_warning = True
 
         if self.mode == ToolPalette.MAP2D_DRAW_TOOL and self.area:
             if evt.Dragging() and evt.LeftIsDown():
@@ -1058,6 +1230,8 @@ void main() {
             # Clone() to remove if AddPendingEvent clones the event
             self.GetEventHandler().AddPendingEvent(event.Clone())
 
+            self._updateRenderWorldThingEntry(self.beingDragged)
+
             self.requestRedraw()
 
         elif self.mode == ToolPalette.ROTATE_TOOL and\
@@ -1072,6 +1246,7 @@ void main() {
                               self.beingDragged.getBearing())
             # Clone() to remove if AddPendingEvent clones the event
             self.GetEventHandler().AddPendingEvent(event.Clone())
+            self._updateRenderWorldThingEntry(self.beingDragged)
             self.requestRedraw()
         elif self.mode == ToolPalette.PAINT_TOOL and\
            self.beingPainted:
@@ -1283,6 +1458,7 @@ void main() {
                     event = MoveEvent(self.GetId(), thing.getNevereditId(),
                                       thing.getX(), thing.getY(), thing.getBearing())
                     self.GetEventHandler().AddPendingEvent(event.Clone())
+                    self._updateRenderWorldThingEntry(thing)
                     self.requestRedraw()
                     return
 
@@ -1387,6 +1563,13 @@ void main() {
                 return -b + sr_over_2a
 
     def rayFromMouse(self,x,y):
+        if self._isCoreProfileContext():
+            _proj, _view, view_proj = self._buildCameraMatrices()
+            inv_view_proj = LinearAlgebra.inverse(view_proj)
+            near = Numeric.array(self._unprojectWithViewProjectionInverse(x, y, 0.0, inv_view_proj), 'f')
+            far = Numeric.array(self._unprojectWithViewProjectionInverse(x, y, 1.0, inv_view_proj), 'f')
+            return near, far
+
         glPushMatrix()
         try:
             self.setupCamera()
@@ -1638,6 +1821,43 @@ void main() {
         self.preprocessedModels = Set()
         self.creatureModelVariants = {}
         self._missingModelWarnings = set()
+        self._render_world_cache.reset()
+
+    def _rebuildRenderWorldCache(self):
+        tile_count = len(self.tiles or [])
+        thing_count = len(self.fullThingList or [])
+        self._render_world_cache.reset(tile_count, thing_count)
+        if not self.area:
+            return
+
+        area_width = self.area.getWidth()
+        for tile_index, tile in enumerate(self.tiles or []):
+            model = self._getModelSafe(tile, 'tile') if self.preprocessed else getattr(tile, 'model', None)
+            self._render_world_cache.set_tile(tile_index, snapshot_tile(tile, tile_index, area_width, model=model))
+
+        for thing_index, thing in enumerate(self.fullThingList or []):
+            model = self._getModelSafe(thing, 'thing') if self.preprocessed else getattr(thing, 'model', None)
+            self._render_world_cache.set_thing(thing_index, snapshot_thing(thing, thing_index=thing_index, model=model))
+
+    def _ensureRenderWorldCache(self):
+        if len(self._render_world_cache.tile_entries) != len(self.tiles or []):
+            self._rebuildRenderWorldCache()
+            return
+        if len(self._render_world_cache.thing_entries) != len(self.fullThingList or []):
+            self._rebuildRenderWorldCache()
+
+    def _updateRenderWorldThingEntry(self, thing):
+        if thing is None:
+            return
+        try:
+            thing_index = self.fullThingList.index(thing)
+        except (AttributeError, ValueError):
+            return
+        model = self._getModelSafe(thing, 'thing') if self.preprocessed else getattr(thing, 'model', None)
+        self._render_world_cache.set_thing(
+            thing_index,
+            snapshot_thing(thing, thing_index=thing_index, model=model)
+        )
 
     def _getCreatureTintContext(self, creature):
         if not hasattr(creature, 'getPLTTintContext'):
@@ -1737,7 +1957,8 @@ void main() {
         for i,c in enumerate(self.creatures):
             base_model = self._getModelSafe(c, 'creature')
             if not base_model:
-                self._warnMissingModelOnce('creature', c.getName())
+                if not getattr(c, 'usesGenericMarkerFallback', lambda: False)():
+                    self._warnMissingModelOnce('creature', c.getName())
                 continue
 
             tint_context = self._getCreatureTintContext(c)
@@ -1801,8 +2022,9 @@ void main() {
         logger.info('preprocess phase waypoints: %.3fs', time.perf_counter() - phase_start)
         self.setProgress(0)
         self.setStatus("Map display prepared.")
-        logger.info('preprocess total: %.3fs', time.perf_counter() - preprocess_start)
         self.preprocessed = True
+        self._rebuildRenderWorldCache()
+        logger.info('preprocess total: %.3fs', time.perf_counter() - preprocess_start)
         
     def makeQuadTree(self):
         """
@@ -2042,6 +2264,10 @@ void main() {
         self.startLocationIdSet = Set([w.getNevereditId() for w in (self.waypoints or [])
                                        if self._looksLikeStartLocation(w)])
         self.soundIdSet = Set([s.getNevereditId() for s in (self.sounds or [])])
+        if getattr(self, 'preprocessed', False) and not getattr(self, 'preprocessing', False):
+            self._rebuildRenderWorldCache()
+        else:
+            self._render_world_cache.reset(len(self.tiles or []), len(self.fullThingList or []))
 
     def _thingText(self, thing, key):
         if not hasattr(thing, 'hasProperty'):
@@ -2122,7 +2348,11 @@ void main() {
     def _isThingVisibleForLayers(self, thing):
         if thing is None:
             return False
-        tid = thing.getNevereditId()
+        tid = getattr(thing, 'entity_id', None)
+        if tid is None and hasattr(thing, 'getNevereditId'):
+            tid = thing.getNevereditId()
+        if tid is None:
+            return True
         if tid in getattr(self, 'soundIdSet', Set()):
             return bool(self.layerVisibility.get('showSounds', True))
         if tid in getattr(self, 'doorIdSet', Set()):
@@ -2254,6 +2484,17 @@ void main() {
         glEnable(GL_DEPTH_TEST)
 
     def _drawAmbientLegendOverlay(self):
+        lines = self._getAmbientLegendLines()
+        if not lines:
+            return
+
+        y = self.height - 18
+        glColor3f(1.0, 0.95, 0.7)
+        for line in lines:
+            self.output_text(14, y, line)
+            y -= 14
+
+    def _getAmbientLegendLines(self):
         highlighted = self.getThingHit(self.highlight) if self.highlight is not None else None
         selected = self.getThingHit(self.selected[0]) if self.selected else None
         target = selected if selected is not None else highlighted
@@ -2261,7 +2502,7 @@ void main() {
                 (highlighted is not None and hasattr(highlighted, 'getRadius')) or
                 (selected is not None and hasattr(selected, 'getRadius')))
         if not show:
-            return
+            return []
 
         model_text = 'linear'
         if target is not None and hasattr(target, 'hasProperty') and target.hasProperty('AttenuationModel'):
@@ -2280,12 +2521,7 @@ void main() {
             lines.append('Active voices: %d' % len(self._ambientPreviewDebugVoices))
             for voice_line in self._ambientPreviewDebugVoices[:3]:
                 lines.append('  ' + voice_line)
-
-        y = self.height - 18
-        glColor3f(1.0, 0.95, 0.7)
-        for line in lines:
-            self.output_text(14, y, line)
-            y -= 14
+        return lines
 
     def _get2DTerrainName(self, idx):
         names = ['grass', 'stone', 'water', 'dirt', 'sand', 'cliff']
@@ -2628,9 +2864,20 @@ void main() {
         glEnable(GL_TEXTURE_2D)
 
     def _draw2DLegendOverlay(self):
+        lines = self._get2DLegendLines()
+        if not lines:
+            return
+
+        y = self.height - 76
+        glColor3f(0.82, 0.98, 0.85)
+        for line in lines:
+            self.output_text(14, y, line)
+            y -= 14
+
+    def _get2DLegendLines(self):
         show = (self.mode == ToolPalette.MAP2D_DRAW_TOOL)
         if not show:
-            return
+            return []
         lines = [
             '2D Draw: LMB paint | Ctrl+LMB raise | Alt+LMB lower | Shift+LMB toggle block',
             'RMB cycle asset at cell | Wheel +/- brush radius | C clear | X export | I import',
@@ -2641,11 +2888,33 @@ void main() {
                'on' if self.map2DShowOcclusion else 'off',
                self.map2DBrushRadius)
         ]
-        y = self.height - 76
-        glColor3f(0.82, 0.98, 0.85)
-        for line in lines:
+        return lines
+
+    def _queueCoreTextOverlays(self):
+        if self.showFPS:
+            self.output_text(15, 15, 'fps: %.2f' % self.fps)
+
+        ambient_lines = self._getAmbientLegendLines()
+        y = self.height - 18
+        for line in ambient_lines:
             self.output_text(14, y, line)
             y -= 14
+
+        legend_lines = self._get2DLegendLines()
+        y = self.height - 76
+        for line in legend_lines:
+            self.output_text(14, y, line)
+            y -= 14
+
+        if self.highlight is not None:
+            thing = self.getThingHit(self.highlight)
+            if thing is not None:
+                self.output_text(14, 52, 'Highlight: %s' % thing.getName())
+
+        if self.selected:
+            thing = self.getThingHit(self.selected[0])
+            if thing is not None:
+                self.output_text(14, 36, 'Selected: %s' % thing.getName())
 
     def _canUseGenericThingMarker(self, thing):
         return bool(thing and hasattr(thing, 'getX') and hasattr(thing, 'getY') and
@@ -3226,6 +3495,323 @@ void main() {
                          exc_info=True)
         return None
 
+    def _makeCoreBaseMatrix(self, tx, ty, tz, bearing_degrees=0.0):
+        base = Numeric.identity(4, 'f')
+        base[0, 3] = float(tx)
+        base[1, 3] = float(ty)
+        base[2, 3] = float(tz)
+        angle = math.radians(float(bearing_degrees))
+        c = math.cos(angle)
+        s = math.sin(angle)
+        rot = Numeric.identity(4, 'f')
+        rot[0, 0] = c
+        rot[0, 1] = -s
+        rot[1, 0] = s
+        rot[1, 1] = c
+        return Numeric.dot(base, rot)
+
+    def _drawTileCore(self, t, i, model_override=None):
+        model = model_override if model_override is not None else t.getModel()
+        if not model:
+            return False
+        root = model.getRootNode()
+        if root is None:
+            return False
+        x = i % self.area.getWidth()
+        y = i // self.area.getWidth()
+        tx = x * 10.0 + 5.0
+        ty = y * 10.0 + 5.0
+        tz = t.getTileHeight() * 5.0
+        base = self._makeCoreBaseMatrix(tx, ty, tz, float(t.getBearing()))
+        return self.drawModelCorePath(root, base_matrix=base)
+
+    def _drawThingCore(self, thing, model_override=None):
+        model = model_override if model_override is not None else thing.getModel()
+        if not model:
+            return False
+        root = model.getRootNode()
+        if root is None:
+            return False
+        bearing_degrees = float(thing.getBearing()) * 180.0 / math.pi
+        base = self._makeCoreBaseMatrix(thing.getX(), thing.getY(), thing.getZ(), bearing_degrees)
+        return self.drawModelCorePath(root, base_matrix=base)
+
+    def _distanceToCamera(self, x, y, z):
+        dx = float(x) - float(self.viewX)
+        dy = float(y) - float(self.viewY)
+        dz = float(z) - float(self.viewZ)
+        return math.sqrt(dx * dx + dy * dy + dz * dz)
+
+    def _findFirstRenderableNodeForRoot(self, root):
+        if root is None:
+            return None
+        stack = [root]
+        while stack:
+            node = stack.pop()
+            if self.isRenderableMeshNode(node):
+                return node
+            children = getattr(node, 'children', None)
+            if children:
+                stack.extend(children)
+        return None
+
+    def _coreSortKeyForRoot(self, root):
+        node = self._findFirstRenderableNodeForRoot(root)
+        if node is None:
+            return (0, 0, 0, 0, 0, 0, id(root))
+        tex0 = int(self._getNodeGLTextureName(node, 0) or 0)
+        tex1 = int(self._getNodeGLTextureName(node, 1) or 0)
+        diffuse = getattr(node, 'diffuseColour', (1.0, 1.0, 1.0, 1.0))
+        r = int(max(0, min(255, int(float(diffuse[0]) * 255.0))))
+        g = int(max(0, min(255, int(float(diffuse[1]) * 255.0))))
+        b = int(max(0, min(255, int(float(diffuse[2]) * 255.0))))
+        return (0, tex0, tex1, r, g, b, id(root))
+
+    def _isThingInstancingCandidate(self, thing, thing_index, snapshot=None):
+        if thing is None and snapshot is None:
+            return False
+        if thing_index in self.selected or thing_index == self.highlight:
+            return False
+        tid = None
+        if snapshot is not None:
+            tid = snapshot.entity_id
+        elif hasattr(thing, 'getNevereditId'):
+            tid = thing.getNevereditId()
+        if tid in getattr(self, 'placeableIdSet', Set()):
+            return True
+        model_name = ''
+        if snapshot is not None:
+            model_name = str(getattr(snapshot, 'modelName', '') or '').lower()
+        else:
+            model_name = str(getattr(thing, 'modelName', '') or '').lower()
+        return ('tree' in model_name or 'grass' in model_name or 'bush' in model_name)
+
+    def _resolveLodModelForName(self, model_name):
+        if not model_name:
+            return None
+        base_name = str(model_name).strip().lower()
+        if base_name.endswith('.mdl'):
+            base_name = base_name[:-4]
+        if base_name in self._coreLodModelCache:
+            return self._coreLodModelCache[base_name]
+
+        rm = neverglobals.getResourceManager()
+        resolved = None
+        for suffix in self.coreLodModelSuffixes:
+            candidate = base_name + suffix
+            resolved = rm.getResourceByName(candidate + '.mdl')
+            if resolved is None:
+                resolved = rm.getResourceByName(candidate)
+            if resolved is not None:
+                break
+
+        self._coreLodModelCache[base_name] = resolved
+        if resolved is not None:
+            prep_key = id(resolved)
+            if prep_key not in self._coreLodPrepared:
+                self.preprocessNodes(resolved, 'lod-' + base_name, bbox=True)
+                self._coreLodPrepared.add(prep_key)
+        return resolved
+
+    def _getModelRootRadius(self, model):
+        if model is None:
+            return None
+        try:
+            root = model.getRootNode()
+        except Exception:
+            return None
+        if root is None:
+            return None
+        sphere = getattr(root, 'boundingSphere', None)
+        if not sphere or len(sphere) < 2:
+            return None
+        try:
+            return float(sphere[1])
+        except Exception:
+            return None
+
+    def _computeLodDistanceForModel(self, model, base_distance):
+        radius = self._getModelRootRadius(model)
+        if radius is None:
+            return float(base_distance)
+        scale = max(0.55, min(1.75, radius / 8.0))
+        return float(base_distance) * scale
+
+    def _isDecorativeFarCullCandidate(self, thing):
+        model_name = str(getattr(thing, 'modelName', '') or '').lower()
+        return ('grass' in model_name or 'bush' in model_name or 'fern' in model_name or
+                'weed' in model_name or 'reed' in model_name or 'plant' in model_name)
+
+    def _selectLodModelForTile(self, tile, model, x, y, z):
+        if model is None:
+            return None
+        lod_distance = self._computeLodDistanceForModel(model, self.coreTileLodDistance)
+        if self._distanceToCamera(x, y, z) <= lod_distance:
+            return model
+        lod = self._resolveLodModelForName(getattr(tile, 'modelName', ''))
+        return lod if lod is not None else model
+
+    def _selectLodModelForThing(self, thing, model):
+        if model is None:
+            return None
+        distance = self._distanceToCamera(thing.getX(), thing.getY(), thing.getZ())
+        base_distance = self.coreThingLodDistance
+        if self._isThingInstancingCandidate(thing, None):
+            base_distance = self.coreSmallThingLodDistance
+        lod_distance = self._computeLodDistanceForModel(model, base_distance)
+        if distance <= lod_distance:
+            return model
+        lod = self._resolveLodModelForName(getattr(thing, 'modelName', ''))
+        if lod is None and self._isDecorativeFarCullCandidate(thing) and distance > self.coreDecorCullDistance:
+            return None
+        return lod if lod is not None else model
+
+    def _queueCoreTileEntry(self, queue, tile_entry):
+        if tile_entry is None:
+            return
+        model = tile_entry.model
+        if not model:
+            return
+        model = self._selectLodModelForTile(tile_entry, model, tile_entry.x, tile_entry.y, tile_entry.z)
+        root = model.getRootNode() if model is not None else None
+        if root is None:
+            return
+        base = self._makeCoreBaseMatrix(tile_entry.x, tile_entry.y, tile_entry.z, tile_entry.bearing_degrees)
+        sort_key = self._coreSortKeyForRoot(root)
+        instance_key = ('tile', sort_key)
+        queue.append({
+            'root': root,
+            'base': base,
+            'sort_key': sort_key,
+            'instance_key': instance_key,
+        })
+
+    def _queueCoreThingEntry(self, queue, thing_entry):
+        if thing_entry is None or not self._isThingVisibleForLayers(thing_entry):
+            return
+        model = thing_entry.model
+        if not model:
+            return
+        model = self._selectLodModelForThing(thing_entry, model)
+        root = model.getRootNode() if model is not None else None
+        if root is None:
+            return
+        base = self._makeCoreBaseMatrix(thing_entry.getX(), thing_entry.getY(), thing_entry.getZ(),
+                                        thing_entry.bearing_degrees)
+        sort_key = self._coreSortKeyForRoot(root)
+        instance_key = None
+        if self._isThingInstancingCandidate(thing_entry, thing_entry.thing_index, snapshot=thing_entry):
+            instance_key = ('thing', sort_key)
+        queue.append({
+            'root': root,
+            'base': base,
+            'sort_key': sort_key,
+            'instance_key': instance_key,
+        })
+
+    def _collectCoreRenderQueueFromTree(self, node, queue, useFrustumCull=True):
+        if node is None:
+            return
+        sphere = getattr(node, 'boundingSphere', None)
+        if useFrustumCull and sphere is not None:
+            if not self.sphereInFrustumWorld(sphere[0], sphere[1]):
+                return
+        if len(node.children) > 0:
+            for halves in node.children:
+                for c in halves:
+                    self._collectCoreRenderQueueFromTree(c, queue, useFrustumCull)
+            return
+
+        for _tile, tile_index in node.contents.get('tiles', []):
+            self._queueCoreTileEntry(queue, self._render_world_cache.get_tile(tile_index))
+        for _thing, thing_index in node.contents.get('things', []):
+            self._queueCoreThingEntry(queue, self._render_world_cache.get_thing(thing_index))
+
+    def _drawCoreRenderQueue(self, queue):
+        if not queue:
+            return False
+        if self.coreBatchingEnabled:
+            queue.sort(key=lambda item: item['sort_key'])
+
+        drew = False
+        i = 0
+        while i < len(queue):
+            entry = queue[i]
+            instance_key = entry.get('instance_key')
+            if instance_key is None:
+                drew = self.drawModelCorePath(entry['root'], base_matrix=entry['base']) or drew
+                i += 1
+                continue
+
+            j = i + 1
+            while j < len(queue) and queue[j].get('instance_key') == instance_key:
+                j += 1
+            run = queue[i:j]
+
+            if len(run) >= max(2, int(self.coreInstancingMinBatch)):
+                instance_matrices = [item['base'] for item in run]
+                if self.drawModelCoreInstancedPath(entry['root'], instance_matrices):
+                    drew = True
+                    i = j
+                    continue
+
+            for item in run:
+                drew = self.drawModelCorePath(item['root'], base_matrix=item['base']) or drew
+            i = j
+        return drew
+
+    def _getAreaAmbientRgb(self):
+        """Extract MoonAmbientColor from the area as (r, g, b) floats in [0,1]."""
+        try:
+            v = self.area.getPropertyValue('MoonAmbientColor')
+            return ((v & 0xff) / 255.0, ((v >> 8) & 0xff) / 255.0, ((v >> 16) & 0xff) / 255.0)
+        except Exception:
+            return (0.58, 0.58, 0.58)
+
+    def _getAreaDiffuseRgb(self):
+        """Extract SunDiffuseColor from the area as (r, g, b) floats in [0,1]."""
+        try:
+            v = self.area.getPropertyValue('SunDiffuseColor')
+            return ((v & 0xff) / 255.0, ((v >> 8) & 0xff) / 255.0, ((v >> 16) & 0xff) / 255.0)
+        except Exception:
+            return (0.72, 0.72, 0.72)
+
+    def _getAreaFogRgb(self):
+        """Extract the active fog color from the area as (r, g, b) floats in [0,1]."""
+        try:
+            fog_key = 'MoonFogColor' if self.area.getPropertyValue('IsNight') else 'SunFogColor'
+            v = self.area.getPropertyValue(fog_key)
+            return ((v & 0xff) / 255.0, ((v >> 8) & 0xff) / 255.0, ((v >> 16) & 0xff) / 255.0)
+        except Exception:
+            ambient = self._getAreaAmbientRgb()
+            return tuple(min(1.0, c * 0.9 + 0.1) for c in ambient)
+
+    def _getCoreFogDistances(self):
+        near_distance = min(self.coreFogNearDistance, self.coreDecorCullDistance * 0.8)
+        far_distance = max(self.coreFogFarDistance, near_distance + 40.0)
+        return near_distance, far_distance
+
+    def _drawTreeCore(self):
+        if not self.quadTreeRoot:
+            return False
+        self._ensureRenderWorldCache()
+        if self.area:
+            self.setCoreFrameLightUniforms(self._getAreaAmbientRgb(), self._getAreaDiffuseRgb())
+            fog_near, fog_far = self._getCoreFogDistances()
+            self.setCoreFrameFogUniforms(self.coreFogEnabled, self._getAreaFogRgb(), fog_near, fog_far,
+                                         self.coreDistanceDesatStrength)
+            self.setCoreFrameToonUniforms(self.toonShading, self.coreToonBands, self.coreToonRimStrength)
+        else:
+            self.setCoreFrameFogUniforms(False)
+            self.setCoreFrameToonUniforms(False)
+        _proj, _view, view_proj = self._buildCameraMatrices()
+        self.updateFrustumFromViewProjection(view_proj)
+        useFrustumCull = self.sphereInFrustumWorld(self.quadTreeRoot.boundingSphere[0],
+                                                   self.quadTreeRoot.boundingSphere[1])
+        queue = []
+        self._collectCoreRenderQueueFromTree(self.quadTreeRoot, queue, useFrustumCull)
+        return self._drawCoreRenderQueue(queue)
+
     def drawTile(self,t,i):
         model = t.getModel()
         if not model:
@@ -3283,6 +3869,125 @@ void main() {
         glLineWidth(1.0)
         glEnable(GL_LIGHTING)
         glEnable(GL_TEXTURE_2D)
+
+    def _drawWaypointPathsCore(self):
+        if not self.layerVisibility.get('showWaypoints', True):
+            return
+        if not self.waypoints:
+            return
+
+        by_tag = {}
+        for w in self.waypoints:
+            tag = w['Tag']
+            if tag:
+                by_tag[str(tag)] = w
+
+        segments = []
+        for src in self.waypoints:
+            linked = src['LinkedTo']
+            if not linked:
+                continue
+            dst = by_tag.get(str(linked))
+            if dst is None:
+                continue
+            segments.append(((float(src.getX()), float(src.getY()), float(src.getZ()) + 0.15),
+                             (float(dst.getX()), float(dst.getY()), float(dst.getZ()) + 0.15)))
+
+        if segments:
+            self.drawCoreLineSegments(segments, color=(0.95, 0.6, 0.1, 0.85), line_width=2.0)
+
+    def _transformPointWithMatrix(self, matrix, point3):
+        v = Numeric.array([float(point3[0]), float(point3[1]), float(point3[2]), 1.0], 'f')
+        out = Numeric.dot(matrix, v)
+        w = float(out[3])
+        if abs(w) > 1.0e-8:
+            out = out / w
+        return (float(out[0]), float(out[1]), float(out[2]))
+
+    def _appendTransformedBoxSegments(self, out_segments, box, matrix):
+        if box is None:
+            return
+        mins = box[0]
+        maxs = box[1]
+        corners = [
+            (mins[0], mins[1], mins[2]),
+            (maxs[0], mins[1], mins[2]),
+            (maxs[0], maxs[1], mins[2]),
+            (mins[0], maxs[1], mins[2]),
+            (mins[0], mins[1], maxs[2]),
+            (maxs[0], mins[1], maxs[2]),
+            (maxs[0], maxs[1], maxs[2]),
+            (mins[0], maxs[1], maxs[2]),
+        ]
+        transformed = [self._transformPointWithMatrix(matrix, c) for c in corners]
+        edges = [
+            (0, 1), (1, 2), (2, 3), (3, 0),
+            (4, 5), (5, 6), (6, 7), (7, 4),
+            (0, 4), (1, 5), (2, 6), (3, 7),
+        ]
+        for i0, i1 in edges:
+            out_segments.append((transformed[i0], transformed[i1]))
+
+    def _appendCoreCrossMarker(self, out_segments, x, y, z, size=0.45):
+        out_segments.append(((x - size, y, z), (x + size, y, z)))
+        out_segments.append(((x, y - size, z), (x, y + size, z)))
+
+    def _appendThingSelectionSegmentsCore(self, out_segments, thing):
+        if thing is None:
+            return
+        model = thing.getModel() if hasattr(thing, 'getModel') else None
+        if model is not None:
+            root = model.getRootNode()
+            if root is not None:
+                box = self._getHighlightBoundingBox(model, root)
+                if box is not None:
+                    bearing_degrees = float(thing.getBearing()) * 180.0 / math.pi
+                    base = self._makeCoreBaseMatrix(thing.getX(), thing.getY(), thing.getZ(), bearing_degrees)
+                    self._appendTransformedBoxSegments(out_segments, box, base)
+                    return
+
+        if self._isPolygonRegionThing(thing):
+            points = self._getTriggerWorldPoints(thing)
+            if len(points) >= 2:
+                for i in range(len(points)):
+                    p0 = points[i]
+                    p1 = points[(i + 1) % len(points)]
+                    out_segments.append(((float(p0[0]), float(p0[1]), float(p0[2]) + 0.08),
+                                         (float(p1[0]), float(p1[1]), float(p1[2]) + 0.08)))
+                return
+
+        self._appendCoreCrossMarker(out_segments,
+                                    float(thing.getX()),
+                                    float(thing.getY()),
+                                    float(thing.getZ()) + 0.12,
+                                    size=0.45)
+
+    def _drawCoreSelectionOverlays(self):
+        selected_segments = []
+        highlight_segments = []
+
+        selected_ids = [sid for sid in self.selected if sid is not None]
+        selected_id_set = Set(selected_ids)
+
+        for sid in selected_ids:
+            thing = self.getThingHit(sid)
+            if thing is None or not self._isThingVisibleForLayers(thing):
+                continue
+            self._appendThingSelectionSegmentsCore(selected_segments, thing)
+
+        if self.highlight is not None and self.highlight not in selected_id_set:
+            thing = self.getThingHit(self.highlight)
+            if thing is not None and self._isThingVisibleForLayers(thing):
+                self._appendThingSelectionSegmentsCore(highlight_segments, thing)
+
+        if highlight_segments:
+            self.drawCoreLineSegments(highlight_segments,
+                                      color=(0.12, 0.35, 1.0, 0.95),
+                                      line_width=2.0)
+        if selected_segments:
+            self.drawCoreLineSegments(selected_segments,
+                                      color=(0.18, 0.95, 0.2, 0.98),
+                                      line_width=2.4)
                 
     def drawTree(self):
         #self.vCheckCount = 0
@@ -3314,6 +4019,29 @@ void main() {
     # The main drawing function. 
     def DrawGLScene(self):        
         GLWindow.DrawGLScene(self)
+        if getattr(self, '_core_profile_stub_mode', False):
+            if self.toPreprocess:
+                self.preprocessNodes(self.toPreprocess.getModel(),'tag',bbox=True)
+                self.preprocessedModels.add(self.toPreprocess.modelName)
+                self.toPreprocess = None
+            if not self.preprocessed:
+                return
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+            drew = False
+            if self.area:
+                self.beginCoreDrawFrame()
+                drew = self._drawTreeCore()
+                if self.beingPainted:
+                    drew = self._drawThingCore(self.beingPainted) or drew
+                self._drawWaypointPathsCore()
+                self._drawCoreSelectionOverlays()
+            if not drew and not getattr(self, '_logged_core_stub_map_warning', False):
+                logger.warning('Core profile mode: map geometry path is active but no drawable core-ready meshes were found this frame')
+                self._logged_core_stub_map_warning = True
+            self._updateAmbientPreview()
+            self._queueCoreTextOverlays()
+            self.SwapBuffers()
+            return
         if self.toPreprocess:
             self.preprocessNodes(self.toPreprocess.getModel(),'tag',bbox=True)
             self.preprocessedModels.add(self.toPreprocess.modelName)
@@ -3337,6 +4065,14 @@ void main() {
                                              self.viewZ,
                                              1.0])
 
+            if hasattr(self, 'shader_manager'):
+                self.shader_manager.set_scene_lighting(
+                    ambient=[ambient[0], ambient[1], ambient[2], 1.0],
+                    diffuse=[diffuse[0], diffuse[1], diffuse[2], 1.0],
+                    specular=[1.0, 1.0, 1.0, 1.0],
+                    position=[self.viewX, self.viewY, self.viewZ, 1.0],
+                )
+
             w = self.area.getWidth()*10.0
             h = self.area.getHeight()*10.0
 
@@ -3349,6 +4085,7 @@ void main() {
             # Apply shader if available
             if hasattr(self, 'shader_manager') and self._shaders_compiled:
                 shader_render_state = self.shader_manager.apply_render_state()
+                self.shader_manager.sync_matrix_state_from_gl()
                 self.shader_manager.use_current_shader()
             
             self.drawTree()

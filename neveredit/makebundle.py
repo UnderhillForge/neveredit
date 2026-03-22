@@ -15,7 +15,7 @@ libExt = wxPyMajorVersion + '.' + 'dylib'
 def neveredit_setup(app):
     app.mainprogram = "NeverEditMainApp.py"
 
-    app.includePackages.append('numarray')
+    app.includePackages.append('numpy')
     app.includePackages.append('PIL')
     app.includeModules.append('_imaging')
 

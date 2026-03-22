@@ -9,7 +9,7 @@ Simple module providing a quaternion class for manipulating rotations easily.
       commonly needed for manipulating rotations.
 """
 from math import *
-from numarray import *
+import numpy as np
 from . import utilities
 
 def fromXYZR( x,y,z, r ):
@@ -17,7 +17,7 @@ def fromXYZR( x,y,z, r ):
         x,y,z are the axis of rotation
         r is the rotation in radians."""
         x,y,z = utilities.normalise( (x,y,z) )
-        return Quaternion ( array( [
+        return Quaternion ( np.array( [
                 cos(r/2.0), x*(sin(r/2.0)), y*(sin(r/2.0)), z*(sin(r/2.0)),
         ]) )
 def fromEuler( x=0,y=0,z=0 ):
@@ -53,8 +53,8 @@ class Quaternion(object):
                 the default values are those for a unit multiplication
                 quaternion.
                 """
-                elements = asarray( elements, 'd')
-                length = sqrt( sum( elements * elements))
+                elements = np.asarray(elements, 'd')
+                length = sqrt(np.sum(elements * elements))
                 if length != 1:
 ##                      print 'fixing quaternion length', repr(length)
                         elements = elements/length
@@ -78,9 +78,9 @@ class Quaternion(object):
                         x = w1*x2 + x1*w2 + y1*z2 - z1*y2
                         y = w1*y2 + y1*w2 + z1*x2 - x1*z2
                         z = w1*z2 + z1*w2 + x1*y2 - y1*x2
-                        return self.__class__( array([w,x,y,z],'d'))
+                        return self.__class__(np.array([w, x, y, z], 'd'))
                 else:
-                        return dot( self.matrix (), other )
+                        return np.dot(self.matrix(), other)
         def XYZR( self ):
                 """Get a VRML-style axis plus rotation form of the rotation.
                 Note that this is in radians, not degrees, and that the angle
@@ -99,7 +99,7 @@ class Quaternion(object):
         def matrix( self ):
                 """Get a rotation matrix representing this rotation"""
                 w,x,y,z = self.internal
-                return array([
+                return np.array([
                         [ 1-2*y*y-2*z*z, 2*x*y+2*w*z, 2*x*z-2*w*y, 0],
                         [ 2*x*y-2*w*z, 1-2*x*x-2*z*z, 2*y*z+2*w*x, 0],
                         [ 2*x*z+2*w*y, 2*y*z-2*w*x, 1-2*x*x-2*y*y, 0],
@@ -125,7 +125,7 @@ class Quaternion(object):
                 From code by Halldor Fannar on the 3D game development algos list
                 """
                 #first get the dot-product of the two vectors
-                cosValue = sum(self.internal + other.internal)
+                cosValue = np.sum(self.internal + other.internal)
                 # now get the positive angle in range 0-pi
                 return acos( cosValue )
         def slerp( self, other, fraction = 0, minimalStep= 0.0001):
@@ -133,7 +133,7 @@ class Quaternion(object):
 
                 Algo is from: http://www.gamasutra.com/features/19980703/quaternions_01.htm
                 """
-                cosValue = sum(self.internal + other.internal)
+                cosValue = np.sum(self.internal + other.internal)
                 # if the cosValue is negative, use negative target and cos values?
                 # not sure why, it's just done this way in the sample code
                 if cosValue < 0.0:
@@ -164,7 +164,7 @@ def test_quat ():
         print(fromEuler( y = pi/2, z = pi/2 ))
         first = fromXYZR( 0,1,0,0 )
         second = fromXYZR( 0,1,0,pi )
-        for fraction in arange( 0.0, 1.0, .01 ):
+        for fraction in np.arange(0.0, 1.0, .01):
                 print(first.slerp( second, fraction ))
 
 if __name__== "__main__":

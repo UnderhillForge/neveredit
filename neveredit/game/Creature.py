@@ -89,14 +89,33 @@ class Creature(LocatedNeverData):
         if token.endswith('.mdl'):
             return [token]
         return [token + '.mdl']
+
+    @staticmethod
+    def _looks_like_part_prefix(model_name):
+        base = str(model_name).split('.', 1)[0]
+        return len(base) <= 2
+
+    @staticmethod
+    def _resource_exists(rm, model_name):
+        base = str(model_name).rsplit('.', 1)[0]
+        try:
+            keys = rm.getKeysWithName(base)
+        except (AttributeError, IndexError, KeyError, TypeError, ValueError):
+            return False
+        mdl_type = rm.RESOURCETYPES.get('MDL')
+        return any(key[1] == mdl_type for key in keys)
         
     def getName(self):
         """Return first and last name of this creature as a single string"""
         return self['FirstName'].getString () + ' ' + self['LastName'].getString ()
+
+    def usesGenericMarkerFallback(self):
+        return bool(getattr(self, '_noStandaloneModelExpected', False))
     
     def getModel(self,copy=False):
         if not copy and self.model:
             return self.model
+        self._noStandaloneModelExpected = False
         rm = neverglobals.getResourceManager()
         twoda = rm.getResourceByName('appearance.2da')
         try:
@@ -122,8 +141,21 @@ class Creature(LocatedNeverData):
                 if candidate not in candidates:
                     candidates.append(candidate)
 
+        # Player-style appearance rows often only contain body-part prefixes
+        # like "g" or "h" rather than a standalone MDL resref.
+        if t == 'P' and candidates and all(self._looks_like_part_prefix(name) for name in candidates):
+            self._noStandaloneModelExpected = True
+            warning_key = ('missing-creature-playerparts', index, tuple(candidates))
+            if warning_key not in Creature._missing_model_warnings:
+                Creature._missing_model_warnings.add(warning_key)
+                logger.debug('no standalone model for player-style Appearance_Type=%s candidates=%s',
+                             index, ', '.join(candidates))
+            return None
+
+        available_candidates = [name for name in candidates if self._resource_exists(rm, name)]
+
         # Choose the first candidate that is actually present in resources.
-        for model_name in candidates:
+        for model_name in available_candidates:
             model = rm.getResourceByName(model_name, copy)
             if model is None:
                 continue
@@ -137,16 +169,6 @@ class Creature(LocatedNeverData):
             if warning_key not in Creature._missing_model_warnings:
                 Creature._missing_model_warnings.add(warning_key)
                 logger.warning('could not resolve creature model for Appearance_Type=%s (MODELTYPE=%s)', index, t)
-            return None
-
-        # Some appearance rows only define part prefixes (e.g. single-character
-        # values) and do not map to a standalone creature MDL.
-        if t == 'P' and all(len(name.split('.', 1)[0]) <= 2 for name in candidates):
-            warning_key = ('missing-creature-playerparts', index, tuple(candidates))
-            if warning_key not in Creature._missing_model_warnings:
-                Creature._missing_model_warnings.add(warning_key)
-                logger.debug('no standalone model for player-style Appearance_Type=%s candidates=%s',
-                             index, ', '.join(candidates))
             return None
 
         warning_key = ('missing-creature-resource', index, tuple(candidates))

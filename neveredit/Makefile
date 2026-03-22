@@ -51,7 +51,7 @@ freeze:
 	$(MAINFILE)\
 	--install-dir ../build/$(FREEZE_OUT)\
 	--include-path=../..\
-	--include-modules=neveredit,encodings,encodings.ascii,encodings.latin_1,encodings.utf_8,PIL.TgaImagePlugin,numarray.libnumarray,numarray._ufunc,numarray._ufuncComplex64,numarray._ufuncInt16,numarray._ufuncInt8,numarray._ufuncUInt64,numarray._ufuncBool,numarray._ufuncFloat32,numarray._ufuncInt32,numarray._ufuncUInt16,numarray._ufuncUInt8,numarray._ufuncComplex32,numarray._ufuncFloat64,numarray._ufuncInt64,numarray._ufuncUInt32,numarray.dotblas\
+	--include-modules=neveredit,encodings,encodings.ascii,encodings.latin_1,encodings.utf_8,PIL.TgaImagePlugin,numpy\
 	--init-script ConsoleSetLibPath\
 	--target-name=$(FREEZE_OUT)
 	cp neveredit*.jpg build/$(FREEZE_OUT)

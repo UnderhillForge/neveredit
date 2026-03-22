@@ -1,0 +1,11 @@
+include AUTHORS
+include COPYING
+include README.md
+include Makefile
+include neveredit.jpg
+include help_nwnlexicon.zip
+include neveredit.icns
+include neverscript.icns
+include neveredit.r
+recursive-include resources *
+recursive-include tests/render/golden *.png

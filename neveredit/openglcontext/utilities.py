@@ -1,6 +1,6 @@
 '''Simple utility functions that should really be in a C module'''
 from math import *
-from numarray import *
+import numpy as np
 from . import vectorutilities
 
 def rotMatrix(rotation):
@@ -15,7 +15,7 @@ def rotMatrix(rotation):
         c = cos( a )
         s = sin( a )
         t = 1-c
-        R = array( [
+        R = np.array([
                 [ t*x*x+c, t*x*y+s*z, t*x*z-s*y, 0],
                 [ t*x*y-s*z, t*y*y+c, t*y*z+s*x, 0],
                 [ t*x*z+s*y, t*y*z-s*x, t*z*z+c, 0],
@@ -36,17 +36,17 @@ def normalise( vector ):
 def pointNormal2Plane( point, normal ):
         """Create parametric equation of plane from point and normal
         """
-        point = asarray(point,'d')
+        point = np.asarray(point, 'd')
         normal = normalise(normal)
-        result = zeros((4,),'d')
+        result = np.zeros((4,), 'd')
         result[:3] = normal
-        result[3] = - dot(normal, point)
+        result[3] = - np.dot(normal, point)
         return result
 
 def plane2PointNormal(plane):
         """Get a point and normal from a plane equation"""
         (a,b,c,d) = plane
-        return asarray((-d*a,-d*b,-d*c),'d'), asarray((a,b,c),'d')
+        return np.asarray((-d * a, -d * b, -d * c), 'd'), np.asarray((a, b, c), 'd')
 
 if __name__ == "__main__":
         for p,n in [
@@ -59,6 +59,6 @@ if __name__ == "__main__":
                 p1,n1 = plane2PointNormal(plane)
                 print('p', p, p1)
                 print('n', n, n1)
-                assert allclose( p, p1)
-                assert allclose(n, n1)
+                assert np.allclose(p, p1)
+                assert np.allclose(n, n1)
         

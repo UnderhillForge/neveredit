@@ -4,5 +4,5 @@ Bioware's Neverwinter Nights role-playing game, which is sold without
 an editor on the Macintosh and Linux platforms.
 """
 
-__version__ = '0.9.1a'
+__version__ = '0.9.1a0'
 

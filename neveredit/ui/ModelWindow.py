@@ -2,6 +2,7 @@
 A class to display a single NWN 3D model.
 '''
 import sys
+import logging
 
 import wx
 from OpenGL.GL import *
@@ -12,6 +13,8 @@ from neveredit.ui.GLWindow import GLWindow
 from neveredit.file import MDLFile
 from neveredit.game.ChangeNotification import VisualChangeListener
 from neveredit.util import neverglobals
+
+logger = logging.getLogger('neveredit.ui')
 
 class ModelWindow(GLWindow, VisualChangeListener):
     __doc__ = globals()['__doc__']
@@ -42,6 +45,21 @@ class ModelWindow(GLWindow, VisualChangeListener):
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
             self.SwapBuffers()
             return
+
+        if self._isCoreProfileContext():
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+            root = self.model.getRootNode() if self.model else None
+            self.beginCoreDrawFrame()
+            drew = self.drawModelCorePath(
+                root,
+                base_translate=(self.getBaseWidth()/2.0, self.getBaseHeight()/2.0, 0.0),
+            )
+            if not drew and not getattr(self, '_logged_core_stub_model_warning', False):
+                logger.warning('Core profile mode: model draw path not ready for this model; rendering fallback clear only')
+                self._logged_core_stub_model_warning = True
+            self.SwapBuffers()
+            return
+
         try:
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
             self.setupCamera()
@@ -49,9 +67,26 @@ class ModelWindow(GLWindow, VisualChangeListener):
             glLightfv(GL_LIGHT0,GL_DIFFUSE,[1.0,1.0,1.0,1.0])
             glLightfv(GL_LIGHT0,GL_SPECULAR,[1.0,1.0,1.0,1.0])
             glLightfv(GL_LIGHT0,GL_POSITION,[self.viewX,self.viewY,self.viewZ,1.0])
+            if hasattr(self, 'shader_manager'):
+                self.shader_manager.set_scene_lighting(
+                    ambient=[1.0, 1.0, 1.0, 1.0],
+                    diffuse=[1.0, 1.0, 1.0, 1.0],
+                    specular=[1.0, 1.0, 1.0, 1.0],
+                    position=[self.viewX, self.viewY, self.viewZ, 1.0],
+                )
+
+            shader_render_state = False
+            if hasattr(self, 'shader_manager') and self._shaders_compiled:
+                shader_render_state = self.shader_manager.apply_render_state()
+                self.shader_manager.sync_matrix_state_from_gl()
+                self.shader_manager.use_current_shader()
+
             glTranslate(self.getBaseWidth()/2.0,self.getBaseHeight()/2.0,0)
             self.handleNode(self.model.getRootNode(),boxOnly=False,
                             frustumCull=False,selected=False)
+            if hasattr(self, 'shader_manager') and self._shaders_compiled:
+                glUseProgram(0)
+                self.shader_manager.restore_render_state(shader_render_state)
             self.SwapBuffers()
             
         except KeyboardInterrupt:

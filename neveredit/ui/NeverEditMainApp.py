@@ -395,6 +395,247 @@ are on Linux/MacOS. -mrunderhill</p>
                 self.map.Refresh(False)
             except Exception:
                 pass
+
+    def _defaultRenderLiveTuningPrefs(self):
+        return {
+            'ToonEnabled': False,
+            'ToonBands': 7.0,
+            'ToonRimStrength': 0.28,
+            'DistanceDesatStrength': 0.12,
+        }
+
+    def _defaultRenderDepthLODPrefs(self):
+        return {
+            'FogEnabled': True,
+            'FogNearDistance': 120.0,
+            'FogFarDistance': 250.0,
+            'TileLodDistance': 140.0,
+            'ThingLodDistance': 110.0,
+            'SmallThingLodDistance': 80.0,
+            'DecorCullDistance': 210.0,
+        }
+
+    def _ensureRenderPreferenceDefaults(self):
+        live_defaults = self._defaultRenderLiveTuningPrefs()
+        depth_defaults = self._defaultRenderDepthLODPrefs()
+        live_values = self.prefs['RenderLiveTuning']
+        depth_values = self.prefs['RenderDepthLOD']
+        if not isinstance(live_values, dict):
+            live_values = {}
+        if not isinstance(depth_values, dict):
+            depth_values = {}
+        for key, value in list(live_defaults.items()):
+            if key not in live_values:
+                live_values[key] = value
+        for key, value in list(depth_defaults.items()):
+            if key not in depth_values:
+                depth_values[key] = value
+        self.prefs['RenderLiveTuning'] = live_values
+        self.prefs['RenderDepthLOD'] = depth_values
+
+    def _applyRenderPreferencesToMap(self):
+        if not self.map:
+            return
+        self._ensureRenderPreferenceDefaults()
+        live_values = self.prefs['RenderLiveTuning']
+        depth_values = self.prefs['RenderDepthLOD']
+
+        self.map.toonShading = bool(live_values.get('ToonEnabled', False))
+        self.map.coreToonBands = float(live_values.get('ToonBands', 7.0))
+        self.map.coreToonRimStrength = float(live_values.get('ToonRimStrength', 0.28))
+        self.map.coreDistanceDesatStrength = float(live_values.get('DistanceDesatStrength', 0.12))
+
+        self.map.coreFogEnabled = bool(depth_values.get('FogEnabled', True))
+        self.map.coreFogNearDistance = float(depth_values.get('FogNearDistance', 120.0))
+        self.map.coreFogFarDistance = float(depth_values.get('FogFarDistance', 250.0))
+        self.map.coreTileLodDistance = float(depth_values.get('TileLodDistance', 140.0))
+        self.map.coreThingLodDistance = float(depth_values.get('ThingLodDistance', 110.0))
+        self.map.coreSmallThingLodDistance = float(depth_values.get('SmallThingLodDistance', 80.0))
+        self.map.coreDecorCullDistance = float(depth_values.get('DecorCullDistance', 210.0))
+        self.map.coreLodDistance = max(self.map.coreTileLodDistance, self.map.coreThingLodDistance)
+
+        try:
+            self.map.requestRedraw()
+        except Exception:
+            pass
+
+    def _rememberMapRenderPreferences(self):
+        self._ensureRenderPreferenceDefaults()
+        if self.map:
+            self.prefs['RenderLiveTuning'] = {
+                'ToonEnabled': bool(self.map.toonShading),
+                'ToonBands': float(self.map.coreToonBands),
+                'ToonRimStrength': float(self.map.coreToonRimStrength),
+                'DistanceDesatStrength': float(self.map.coreDistanceDesatStrength),
+            }
+            self.prefs['RenderDepthLOD'] = {
+                'FogEnabled': bool(self.map.coreFogEnabled),
+                'FogNearDistance': float(self.map.coreFogNearDistance),
+                'FogFarDistance': float(self.map.coreFogFarDistance),
+                'TileLodDistance': float(self.map.coreTileLodDistance),
+                'ThingLodDistance': float(self.map.coreThingLodDistance),
+                'SmallThingLodDistance': float(self.map.coreSmallThingLodDistance),
+                'DecorCullDistance': float(self.map.coreDecorCullDistance),
+            }
+
+    def _makeSliderRow(self, parent, label, minimum, maximum, value):
+        row = wx.BoxSizer(wx.HORIZONTAL)
+        text = wx.StaticText(parent, -1, label)
+        text.SetMinSize(self._scale_size(190, 22))
+        slider = wx.Slider(parent, -1, int(value), int(minimum), int(maximum), style=wx.SL_HORIZONTAL)
+        value_text = wx.StaticText(parent, -1, str(int(value)))
+        value_text.SetMinSize(self._scale_size(58, 22))
+        row.Add(text, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 6)
+        row.Add(slider, 1, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 6)
+        row.Add(value_text, 0, wx.ALIGN_CENTER_VERTICAL)
+        return row, slider, value_text
+
+    def OnRenderLiveTuning(self, event):
+        self._ensureRenderPreferenceDefaults()
+        live_values = dict(self.prefs['RenderLiveTuning'])
+        dlg = wx.Dialog(self, -1, _('Live Render Tuning'), size=self._scale_size(560, 300),
+                        style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER)
+        panel = wx.Panel(dlg)
+        top = wx.BoxSizer(wx.VERTICAL)
+        body = wx.BoxSizer(wx.VERTICAL)
+
+        toon_check = wx.CheckBox(panel, -1, _('Enable toon shading'))
+        toon_check.SetValue(bool(live_values.get('ToonEnabled', False)))
+        body.Add(toon_check, 0, wx.ALL, 8)
+
+        row_bands, slider_bands, bands_value = self._makeSliderRow(
+            panel, _('Toon bands'), 2, 12, int(round(float(live_values.get('ToonBands', 7.0)))))
+        body.Add(row_bands, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 8)
+
+        row_rim, slider_rim, rim_value = self._makeSliderRow(
+            panel, _('Toon rim strength (%)'), 0, 100,
+            int(round(float(live_values.get('ToonRimStrength', 0.28)) * 100.0)))
+        body.Add(row_rim, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 8)
+
+        row_desat, slider_desat, desat_value = self._makeSliderRow(
+            panel, _('Distance desaturation (%)'), 0, 40,
+            int(round(float(live_values.get('DistanceDesatStrength', 0.12)) * 100.0)))
+        body.Add(row_desat, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 8)
+
+        tip = wx.StaticText(panel, -1,
+                            _('These controls update immediately and are saved for future sessions.'))
+        body.Add(tip, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 8)
+
+        panel.SetSizer(body)
+        top.Add(panel, 1, wx.EXPAND | wx.ALL, 4)
+        top.Add(dlg.CreateButtonSizer(wx.OK), 0, wx.EXPAND | wx.ALL, 8)
+        dlg.SetSizer(top)
+        dlg.Layout()
+
+        dirty = {'changed': False}
+
+        def _apply(*_args):
+            live_values['ToonEnabled'] = bool(toon_check.GetValue())
+            live_values['ToonBands'] = float(slider_bands.GetValue())
+            live_values['ToonRimStrength'] = float(slider_rim.GetValue()) / 100.0
+            live_values['DistanceDesatStrength'] = float(slider_desat.GetValue()) / 100.0
+            self.prefs['RenderLiveTuning'] = live_values
+            if self.map:
+                self._applyRenderPreferencesToMap()
+            bands_value.SetLabel(str(int(slider_bands.GetValue())))
+            rim_value.SetLabel('%.2f' % (float(slider_rim.GetValue()) / 100.0))
+            desat_value.SetLabel('%.2f' % (float(slider_desat.GetValue()) / 100.0))
+            dirty['changed'] = True
+
+        toon_check.Bind(wx.EVT_CHECKBOX, _apply)
+        slider_bands.Bind(wx.EVT_SLIDER, _apply)
+        slider_rim.Bind(wx.EVT_SLIDER, _apply)
+        slider_desat.Bind(wx.EVT_SLIDER, _apply)
+
+        _apply()
+        dlg.ShowModal()
+        dlg.Destroy()
+        if dirty['changed']:
+            self.prefs.save()
+
+    def OnRenderDepthLOD(self, event):
+        self._ensureRenderPreferenceDefaults()
+        depth_values = dict(self.prefs['RenderDepthLOD'])
+        dlg = wx.Dialog(self, -1, _('Depth/Fog and LOD Tuning'), size=self._scale_size(620, 420),
+                        style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER)
+        panel = wx.Panel(dlg)
+        top = wx.BoxSizer(wx.VERTICAL)
+        body = wx.BoxSizer(wx.VERTICAL)
+
+        fog_check = wx.CheckBox(panel, -1, _('Enable depth/fog softening'))
+        fog_check.SetValue(bool(depth_values.get('FogEnabled', True)))
+        body.Add(fog_check, 0, wx.ALL, 8)
+
+        rows = []
+        rows.append((
+            'Fog near distance',
+            self._makeSliderRow(panel, _('Fog near distance'), 20, 400,
+                                int(round(float(depth_values.get('FogNearDistance', 120.0))))),
+            'FogNearDistance'))
+        rows.append((
+            'Fog far distance',
+            self._makeSliderRow(panel, _('Fog far distance'), 60, 600,
+                                int(round(float(depth_values.get('FogFarDistance', 250.0))))),
+            'FogFarDistance'))
+        rows.append((
+            'Tile LOD distance',
+            self._makeSliderRow(panel, _('Tile LOD distance'), 40, 320,
+                                int(round(float(depth_values.get('TileLodDistance', 140.0))))),
+            'TileLodDistance'))
+        rows.append((
+            'Thing LOD distance',
+            self._makeSliderRow(panel, _('Thing LOD distance'), 30, 260,
+                                int(round(float(depth_values.get('ThingLodDistance', 110.0))))),
+            'ThingLodDistance'))
+        rows.append((
+            'Small-thing LOD distance',
+            self._makeSliderRow(panel, _('Small-thing LOD distance'), 20, 200,
+                                int(round(float(depth_values.get('SmallThingLodDistance', 80.0))))),
+            'SmallThingLodDistance'))
+        rows.append((
+            'Decor cull distance',
+            self._makeSliderRow(panel, _('Decor cull distance'), 80, 450,
+                                int(round(float(depth_values.get('DecorCullDistance', 210.0))))),
+            'DecorCullDistance'))
+
+        slider_by_key = {}
+        value_by_key = {}
+        for _label, (row, slider, value_text), key in rows:
+            slider_by_key[key] = slider
+            value_by_key[key] = value_text
+            body.Add(row, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 8)
+
+        tip = wx.StaticText(panel, -1,
+                            _('These controls update immediately and are saved for future sessions.'))
+        body.Add(tip, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 8)
+
+        panel.SetSizer(body)
+        top.Add(panel, 1, wx.EXPAND | wx.ALL, 4)
+        top.Add(dlg.CreateButtonSizer(wx.OK), 0, wx.EXPAND | wx.ALL, 8)
+        dlg.SetSizer(top)
+        dlg.Layout()
+
+        dirty = {'changed': False}
+
+        def _apply(*_args):
+            depth_values['FogEnabled'] = bool(fog_check.GetValue())
+            for key, slider in list(slider_by_key.items()):
+                depth_values[key] = float(slider.GetValue())
+                value_by_key[key].SetLabel(str(int(slider.GetValue())))
+            self.prefs['RenderDepthLOD'] = depth_values
+            if self.map:
+                self._applyRenderPreferencesToMap()
+            dirty['changed'] = True
+
+        fog_check.Bind(wx.EVT_CHECKBOX, _apply)
+        for slider in list(slider_by_key.values()):
+            slider.Bind(wx.EVT_SLIDER, _apply)
+
+        _apply()
+        dlg.ShowModal()
+        dlg.Destroy()
+        if dirty['changed']:
+            self.prefs.save()
     
     def OnCloseShaderWindow(self, event):
         if self.shaderWindow:
@@ -426,10 +667,13 @@ are on Linux/MacOS. -mrunderhill</p>
         self.ID_DEL = wx.NewId()
         self.ID_BUILD_MODULE = wx.NewId()
         self.ID_TEST_MODULE = wx.NewId()
+        self.ID_RENDER_LIVE_TUNING = wx.NewId()
+        self.ID_RENDER_DEPTH_LOD = wx.NewId()
         self.ID_MODULE_PROPS = wx.NewId()
         self.ID_AREA_PROPS = wx.NewId()
         self.ID_TREE_AREA_PROPS = wx.NewId()
         self.ID_AREA_WIZARD = wx.NewId()
+        self.ID_REROLL_AREA_BORDER = wx.NewId()
 
         if Utils.iAmOnMac():
             if hasattr(wx, 'App_SetMacExitMenuItemId'):
@@ -509,9 +753,17 @@ are on Linux/MacOS. -mrunderhill</p>
                       _('Compile and validate module resources (placeholder)'))
         self.toolsmenu.Append(self.ID_TEST_MODULE, _('Test Module\tF9'),
                       _('Launch module test workflow (placeholder)'))
+        self.toolsmenu.Append(self.ID_REROLL_AREA_BORDER,
+                  _('Reroll Perimeter Scene Life...'),
+                  _('Regenerate random perimeter features/groups for the selected exterior area'))
+        self.toolsmenu.Enable(self.ID_REROLL_AREA_BORDER, False)
         self.toolsmenu.AppendSeparator()
         self.toolsmenu.Append(self.ID_SHADER_WINDOW_MITEM, _('Shaders...'),
                   _('Open the shader selection window'))
+        self.toolsmenu.Append(self.ID_RENDER_LIVE_TUNING, _('Live Render Tuning...'),
+              _('Adjust toon and distance softness settings in real time'))
+        self.toolsmenu.Append(self.ID_RENDER_DEPTH_LOD, _('Depth/Fog and LOD...'),
+              _('Adjust fog/depth softness and level-of-detail distances'))
         
         helpmenu = wx.Menu()
         helpmenu.Append(self.ID_ABOUT, '&' + _('About...'), _("About neveredit"))
@@ -537,6 +789,9 @@ are on Linux/MacOS. -mrunderhill</p>
         self.Bind(wx.EVT_MENU, self.help, id=self.ID_HELP)
         self.Bind(wx.EVT_MENU, self.OnBuildModule, id=self.ID_BUILD_MODULE)
         self.Bind(wx.EVT_MENU, self.OnTestModule, id=self.ID_TEST_MODULE)
+        self.Bind(wx.EVT_MENU, self.OnRenderLiveTuning, id=self.ID_RENDER_LIVE_TUNING)
+        self.Bind(wx.EVT_MENU, self.OnRenderDepthLOD, id=self.ID_RENDER_DEPTH_LOD)
+        self.Bind(wx.EVT_MENU, self.OnRerollPerimeterSceneLife, id=self.ID_REROLL_AREA_BORDER)
         self.Bind(wx.EVT_MENU, self.OnAreaWizard, id=self.ID_AREA_WIZARD)
         self.Bind(wx.EVT_MENU, self.OnModuleProperties, id=self.ID_MODULE_PROPS)
         self.Bind(wx.EVT_MENU, self.OnAreaProperties, id=self.ID_AREA_PROPS)
@@ -718,6 +973,7 @@ are on Linux/MacOS. -mrunderhill</p>
         self.filemenu.Enable(self.ID_ADD_RESOURCE,True)
         self.filemenu.Enable(self.ID_AREA_WIZARD, True)
         self.filemenu.Enable(self.ID_MODULE_PROPS, True)
+        self.toolsmenu.Enable(self.ID_REROLL_AREA_BORDER, False)
         self.fileChanged = False
         self.tree.Expand(self.treeRoot)
         self.tree.UnselectAll()
@@ -1108,6 +1364,22 @@ are on Linux/MacOS. -mrunderhill</p>
                 ToolPalette.EVT_TOOLSELECTION(self.toolPalette,
                                               self.map.toolSelected)
                 self.toolPalette.GetToolBar().Enable(True)
+                # Update tileset palette based on the area's tileset
+                if area:
+                    try:
+                        tileset = area.getTileSet()
+                        if tileset:
+                            tileset_resref = area.gffstructDict['are'].getInterpretedEntry('Tileset')
+                            if isinstance(tileset_resref, bytes):
+                                tileset_resref = tileset_resref.rstrip(b'\0').decode('latin1', 'ignore')
+                            else:
+                                tileset_resref = str(tileset_resref).strip('\0') if tileset_resref else None
+                            if tileset_resref:
+                                self.toolPalette.setActiveTileset(tileset_resref)
+                    except Exception as e:
+                        logger.warning(f'Error updating tileset palette: {e}')
+                else:
+                    self.toolPalette.setActiveTileset(None)
                 if data:
                     self.map.selectThingById(data.getNevereditId())
         elif tag == 'model':
@@ -1119,7 +1391,8 @@ are on Linux/MacOS. -mrunderhill</p>
     def treeSelChanged(self,event):
         '''Callback to handle the user changing the selection
         in the main tree.'''
-        logger.info("treeSelChanged " + repr(event))
+        logger.info(f"[TREE_SEL] ENTER")
+        sys.stdout.flush()
         self.maybeApplyPropControlValues()
         lastItem = self.selectedTreeItem
         self.selectedTreeItem = event.GetItem()
@@ -1130,22 +1403,108 @@ are on Linux/MacOS. -mrunderhill</p>
         data = self.tree.GetItemData(self.selectedTreeItem)
         notebookSelection = self.notebook.GetSelection()
         area = self.getAreaForTreeItem(self.selectedTreeItem)
+        logger.info(f"[TREE_SEL] area={area is not None}, has_map={bool(self.notebook.getPageByTag('map'))}")
+        sys.stdout.flush()
         self.editmenu.Enable(self.ID_AREA_PROPS, bool(area))
+        self.toolsmenu.Enable(self.ID_REROLL_AREA_BORDER, bool(area))
         oldArea = self.getAreaForTreeItem(lastItem)
         if oldArea and area != oldArea:
             oldArea.discardTiles()
         if area:
             self.lastAreaItem = self.getParentAreaItem(self.selectedTreeItem)
         if area and not self.notebook.getPageByTag('map'):
+            logger.info(f"[TREE_SEL] Creating map")
+            sys.stdout.flush()
             self.map = MapWindow.MapWindow(self.notebook)
             self.notebook.AddPage(self.map, _('Map'), 'map')
             self.map.setProgressDisplay(self)
             self._applyShaderPreferences(self.map.shader_manager)
+            self._applyRenderPreferencesToMap()
             self._connectShaderWindow()
+            logger.info(f"[TREE_SEL] Map created OK")
+            sys.stdout.flush()
         elif not area and self.notebook.getPageByTag('map'):
-            self.map.setArea(None)
-            self.notebook.deletePageByTag('map')
+            logger.info(f"[TREE_SEL] Deleting map")
+            sys.stdout.flush()
+            old_map = self.map
             self.map = None
+            # Disable animations BEFORE anything else
+            try:
+                logger.info(f"[TREE_SEL] Disabling animations...")
+                sys.stdout.flush()
+                old_map.animationsEnabled = False
+                logger.info(f"[TREE_SEL] Animations disabled")
+                sys.stdout.flush()
+            except Exception as e:
+                logger.error(f"[TREE_SEL] Animation disable error: {e}")
+                sys.stdout.flush()
+            # Stop timer synchronously
+            try:
+                logger.info(f"[TREE_SEL] Stopping timer...")
+                sys.stdout.flush()
+                if hasattr(old_map, '_stopAnimationTimer'):
+                    old_map._stopAnimationTimer()
+                logger.info(f"[TREE_SEL] Timer stopped")
+                sys.stdout.flush()
+            except Exception as e:
+                logger.error(f"[TREE_SEL] Timer stop error: {e}")
+                sys.stdout.flush()
+            # CRITICAL: Process all pending deferred callbacks (wx.CallAfter)
+            # before destroying the map. This flushes any pending requestRedraw()
+            # calls that might otherwise try to access the dying map widget.
+            try:
+                logger.info(f"[TREE_SEL] Processing pending events...")
+                sys.stdout.flush()
+                wx.GetApp().ProcessPendingEvents()
+                logger.info(f"[TREE_SEL] Pending events processed")
+                sys.stdout.flush()
+            except Exception as e:
+                logger.error(f"[TREE_SEL] ProcessPendingEvents error: {e}")
+                sys.stdout.flush()
+            try:
+                logger.info(f"[TREE_SEL] Calling setArea(None)...")
+                sys.stdout.flush()
+                old_map.setArea(None)
+                logger.info(f"[TREE_SEL] setArea(None) OK")
+                sys.stdout.flush()
+            except Exception as e:
+                logger.error(f"[TREE_SEL] setArea(None) error: {e}")
+                sys.stdout.flush()
+            # Force map-specific teardown now so listeners/callback state is
+            # cleared before we potentially create a replacement map page.
+            try:
+                logger.info(f"[TREE_SEL] Forcing map teardown...")
+                sys.stdout.flush()
+                if hasattr(old_map, '_teardownMapWindow'):
+                    old_map._teardownMapWindow()
+                logger.info(f"[TREE_SEL] Map teardown complete")
+                sys.stdout.flush()
+            except Exception as e:
+                logger.error(f"[TREE_SEL] _teardownMapWindow error: {e}")
+                sys.stdout.flush()
+            # CRITICAL: Remove from notebook BEFORE destroying the widget
+            # deletePageByTag already destroys the widget, so DON'T call Destroy()
+            try:
+                logger.info(f"[TREE_SEL] Removing page from notebook...")
+                sys.stdout.flush()
+                self.notebook.deletePageByTag('map')
+                logger.info(f"[TREE_SEL] Page removed from notebook")
+                sys.stdout.flush()
+            except Exception as e:
+                logger.error(f"[TREE_SEL] deletePageByTag error: {e}")
+                sys.stdout.flush()
+            # Let wx deliver deferred destroy notifications before continuing.
+            try:
+                logger.info(f"[TREE_SEL] Processing pending events post-delete...")
+                sys.stdout.flush()
+                wx.GetApp().ProcessPendingEvents()
+                logger.info(f"[TREE_SEL] Post-delete events processed")
+                sys.stdout.flush()
+            except Exception as e:
+                logger.error(f"[TREE_SEL] post-delete ProcessPendingEvents error: {e}")
+                sys.stdout.flush()
+            if self.toolPalette:
+                self.toolPalette.setActiveTileset(None)
             self._connectShaderWindow()
         if area and self.toolPalette:
             self.toolPalette.toggleToolOn(ToolPalette.SELECTION_TOOL)
@@ -1199,6 +1558,8 @@ are on Linux/MacOS. -mrunderhill</p>
 
         self.notebook.setSyncAllPages(True)
         self.syncDisplayedPage()
+        logger.info(f"[TREE_SEL] EXIT")
+        sys.stdout.flush()
 
     def maybeApplyPropControlValues(self):
         '''
@@ -1496,17 +1857,17 @@ Copyright 2003-2006'''),
         from neveredit.game.ResourceManager import ResourceManager as _RM
         module = getattr(self, 'module', None)
         if not module:
-            return
+            return False
         results = _AreaWizardModule.show_area_wizard(self)
         if not results:
-            return
+            return False
         existing = {_RM.normalizeResRef(n) for n in module.getAreaNames()}
         if results['resref'] in existing:
             wx.MessageBox(
                 'An area with ResRef "%s" already exists in this module.'
                 % results['resref'],
                 'Duplicate ResRef', wx.OK | wx.ICON_WARNING, self)
-            return
+            return False
         try:
             area = module.createNewArea(
                 name=results['name'],
@@ -1514,11 +1875,12 @@ Copyright 2003-2006'''),
                 tileset=results['tileset'],
                 width=results['width'],
                 height=results['height'],
+                generate_border_scene_life=results.get('generate_border_scene_life', True),
             )
         except Exception as exc:
             wx.MessageBox('Failed to create area: %s' % str(exc),
                           'Error', wx.OK | wx.ICON_ERROR, self)
-            return
+            return False
         area_item = None
         if hasattr(self, 'areaRoot') and self.areaRoot.IsOk():
             area_item = self.makeAreaItem(self.areaRoot, area)
@@ -1534,6 +1896,7 @@ Copyright 2003-2006'''),
         self.setFileChanged(True)
         self.SetStatusText('Created area "%s" (%s)' %
                            (results['name'], results['resref']))
+        return True
 
     def OnNewModule(self, event):
         """Create a new blank module, then launch the Area Wizard."""
@@ -1585,7 +1948,16 @@ Copyright 2003-2006'''),
             return
 
         self.SetStatusText(_('Created module "%s".') % module_name)
-        self._runAreaWizard()
+        area_created = self._runAreaWizard()
+        if area_created:
+            try:
+                self.module.saveToReadFile()
+            except Exception as exc:
+                wx.MessageBox(_('Area was created, but saving failed: %s') % str(exc),
+                              _('Error'), wx.OK | wx.ICON_ERROR, self)
+                return
+            self.setFileChanged(False)
+            self.SetStatusText(_('Created module "%s" with initial area.') % module_name)
 
 
     def OnAreaProperties(self, event):
@@ -1595,6 +1967,49 @@ Copyright 2003-2006'''),
             return
         if PropertiesDialogs.show_area_properties(self, area):
             self.setFileChanged(True)
+
+    def _getActiveAreaForAreaCommand(self):
+        area = None
+        if self.selectedTreeItem:
+            area = self.getAreaForTreeItem(self.selectedTreeItem)
+        if not area and self.map:
+            area = self.map.getArea()
+        return area
+
+    def _refreshAreaAfterTileMutation(self, area):
+        if area is None:
+            return
+        area.discardTiles()
+        if self.map and self.map.getArea() == area:
+            # Force map-side Tile wrappers and render cache to rebuild from ARE data.
+            self.map.setArea(None)
+            self.map.setArea(area)
+            self.map.requestRedraw()
+
+    def _rerollPerimeterSceneLifeForArea(self, area):
+        if area is None:
+            wx.MessageBox(_('No area is selected.'),
+                          _('Scene Life'), wx.OK | wx.ICON_INFORMATION, self)
+            return
+
+        module = getattr(self, 'module', None)
+        if not module:
+            return
+
+        changed, reason = module.rerollAreaPerimeterSceneLife(area)
+        if not changed:
+            wx.MessageBox(str(reason),
+                          _('Scene Life'), wx.OK | wx.ICON_INFORMATION, self)
+            return
+
+        self._refreshAreaAfterTileMutation(area)
+        self.setFileChanged(True)
+        self.SetStatusText(_('Perimeter scene life rerolled for "%s".') % area.getName())
+
+    def OnRerollPerimeterSceneLife(self, event):
+        area = self._getActiveAreaForAreaCommand()
+        self._rerollPerimeterSceneLifeForArea(area)
+
     def OnTreeItemRightClick(self, event):
         """Show a context menu when the user right-clicks a tree item."""
         item = event.GetItem()
@@ -1619,6 +2034,15 @@ Copyright 2003-2006'''),
             self.Bind(wx.EVT_MENU, _on_props, id=props_id)
         else:
             menu.Enable(props_id, False)
+
+        reroll_id = wx.NewId()
+        menu.Append(reroll_id, _('Reroll Perimeter Scene Life...'))
+        if area:
+            def _on_reroll(evt, _area=area):
+                self._rerollPerimeterSceneLifeForArea(_area)
+            self.Bind(wx.EVT_MENU, _on_reroll, id=reroll_id)
+        else:
+            menu.Enable(reroll_id, False)
 
         menu.AppendSeparator()
 
@@ -1706,6 +2130,7 @@ Copyright 2003-2006'''),
         self.prefs['ToolPaletteState'] = self._windowStates.get('ToolPaletteState')
         self.prefs['ShaderWindowState'] = self._windowStates.get('ShaderWindowState')
         self._rememberShaderPreferences()
+        self._rememberMapRenderPreferences()
         try:
             self.prefs['MainSplitterSashPosition'] = int(self.splitter.GetSashPosition())
         except Exception:
@@ -1715,6 +2140,7 @@ Copyright 2003-2006'''),
     def loadPrefs(self):
         '''Load preferences from their standard location.'''
         self.prefs = Preferences.getPreferences()
+        self._ensureRenderPreferenceDefaults()
         #print self.prefs.filehistory
         for f in self.prefs['FileHistory']:
             try:

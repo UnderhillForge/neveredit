@@ -5,7 +5,7 @@ import logging
 import wx
 import os
 
-from neveredit.game.Palette import Palette
+from neveredit.game.Palette import Palette, TilesetPalette
 from neveredit.ui import WxUtils
 
 logger = logging.getLogger('neveredit')
@@ -88,6 +88,68 @@ class PaletteWindow(wx.TreeCtrl):
     def start_standalone(cls):
         cls.app.MainLoop()
     start_standalone = classmethod(start_standalone)
+
+
+class TilePaletteWindow(wx.TreeCtrl):
+    """A tree control representing a tileset palette with Features, Groups, and Tiles sections."""
+    def __init__(self, parent, id):
+        wx.TreeCtrl.__init__(self, parent, id,
+                             style=wx.TR_DEFAULT_STYLE | wx.TR_HIDE_ROOT)
+        self.AddRoot("Tileset Palette")
+        self.tileset_palette = None
+        self.imagelist = wx.ImageList(16, 26)
+        self.SetImageList(self.imagelist)
+        self.Bind(wx.EVT_TREE_ITEM_EXPANDING, self.itemExpanding)
+        self.Bind(wx.EVT_TREE_SEL_CHANGING, self.selectionChanging)
+        
+    def fromTilesetPalette(self, tileset_palette):
+        """Load a tileset palette into the tree view."""
+        # Clear existing items except root
+        root = self.GetRootItem()
+        self.DeleteChildren(root)
+        
+        self.tileset_palette = tileset_palette
+        sections = tileset_palette.getSections()
+        
+        # Add the three sections as root items
+        for section_name in TilesetPalette.SECTION_NAMES:
+            tiles = sections.get(section_name, [])
+            if tiles:
+                section_label = f"{section_name} ({len(tiles)})"
+                section_item = self.AppendItem(root, section_label)
+                self.SetItemData(section_item, None)  # No data for section headers
+                
+                # Add tiles under this section
+                for tile in tiles:
+                    tile_label = tile.getName()
+                    tile_item = self.AppendItem(section_item, tile_label)
+                    self.SetItemData(tile_item, tile)
+    
+    def itemExpanding(self, event):
+        # Tiles are already expanded, nothing to do on demand
+        pass
+    
+    def selectionChanging(self, event):
+        # Allow selection of tiles (which have data)
+        # Don't allow selection of section headers (which have no data)
+        if event.GetItem().IsOk():
+            data = self.GetItemData(event.GetItem())
+            if data is None:
+                # This is a section header, prevent selection
+                event.Veto()
+    
+    def GetSelection(self):
+        """Get the currently selected item (for compatibility with PaletteWindow)."""
+        return wx.TreeCtrl.GetSelection(self)
+    
+    def Unselect(self):
+        """Deselect current item."""
+        self.UnselectAll()
+    
+    def SelectItem(self, item):
+        """Select an item."""
+        if item and item.IsOk():
+            wx.TreeCtrl.SelectItem(self, item)
 
 class PlaceholderPalettePage(wx.Panel):
     """Notebook page used to expose not-yet-implemented palette types."""
@@ -244,9 +306,75 @@ class ToolFrame(wx.MiniFrame):
 
         self.toggleToolOn(self.selectId)
         self.lastPaletteSelection = None
+        self.currentTileset = None
+        self.tilesetPaletteWindow = None
+        self.tilesetPalettePageIndex = None
         
     def getActivePaletteWindow(self):
         return self.notebook.GetPage(self.notebook.GetSelection())
+    
+    def setActiveTileset(self, tileset_resref):
+        """
+        Set the active tileset and load its palette.
+        
+        Args:
+            tileset_resref: The tileset resource reference (e.g., 'tcn01'), or None to clear
+        """
+        if tileset_resref == self.currentTileset:
+            return  # No change needed
+        
+        self.currentTileset = tileset_resref
+        
+        if not tileset_resref:
+            # Remove the tileset palette tab if no tileset
+            self._removeTilesetPaletteTab()
+            return
+        
+        # Load the tileset palette
+        try:
+            tileset_palette = TilesetPalette.getTilesetPalette(tileset_resref)
+            if tileset_palette:
+                self._updateTilesetPaletteTab(tileset_palette)
+            else:
+                logger.warning(f'Could not load palette for tileset {tileset_resref}')
+                self._removeTilesetPaletteTab()
+        except Exception as e:
+            logger.warning(f'Error loading tileset palette: {e}')
+            self._removeTilesetPaletteTab()
+    
+    def _updateTilesetPaletteTab(self, tileset_palette):
+        """Update or create the tileset palette tab."""
+        # Create the palette window if it doesn't exist
+        if not self.tilesetPaletteWindow:
+            self.tilesetPaletteWindow = TilePaletteWindow(self.notebook, -1)
+            self.tilesetPaletteWindow.Bind(wx.EVT_TREE_SEL_CHANGED, self.treeItemSelected)
+            
+            # Check if we already have a Tiles tab (from standard palettes)
+            tile_tab_exists = False
+            for i in range(self.notebook.GetPageCount()):
+                if self.notebook.GetPageText(i) == 'Tiles':
+                    # Replace it with our tileset version
+                    self.notebook.RemovePage(i)
+                    self.notebook.InsertPage(i, self.tilesetPaletteWindow, 'Tiles (Tileset)')
+                    self.tilesetPalettePageIndex = i
+                    tile_tab_exists = True
+                    break
+            
+            if not tile_tab_exists:
+                # Add as a new tab at the beginning
+                self.notebook.InsertPage(0, self.tilesetPaletteWindow, 'Tiles (Tileset)')
+                self.tilesetPalettePageIndex = 0
+        
+        # Load the palette into the window
+        self.tilesetPaletteWindow.fromTilesetPalette(tileset_palette)
+    
+    def _removeTilesetPaletteTab(self):
+        """Remove the tileset palette tab."""
+        if self.tilesetPaletteWindow and self.tilesetPalettePageIndex is not None:
+            self.notebook.RemovePage(self.tilesetPalettePageIndex)
+            self.tilesetPaletteWindow = None
+            self.tilesetPalettePageIndex = None
+        
     
     def toggleToolOn(self,id):
         for tid in self.toolIds:

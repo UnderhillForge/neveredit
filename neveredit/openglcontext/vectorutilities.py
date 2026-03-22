@@ -1,6 +1,7 @@
 """Utilities for processing arrays of vectors"""
-import numarray
-numarray.Error.setMode(dividebyzero="raise")
+import numpy as np
+
+np.seterr(divide='raise')
 
 def crossProduct( set1, set2):
     """Compute element-wise cross-product of two arrays of vectors.
@@ -14,17 +15,17 @@ def crossProduct( set1, set2):
        where x is the number of 3-element vectors
        in the longer set
     """
-    set1 = numarray.asarray( set1, 'd')
-    set1 = numarray.reshape( set1, (-1, 3))
-    set2 = numarray.asarray( set2, 'd')
-    set2 = numarray.reshape( set2, (-1, 3))
+    set1 = np.asarray(set1, dtype='d')
+    set1 = np.reshape(set1, (-1, 3))
+    set2 = np.asarray(set2, dtype='d')
+    set2 = np.reshape(set2, (-1, 3))
     ux = set1[:,0]
     uy = set1[:,1]
     uz = set1[:,2]
     vx = set2[:,0]
     vy = set2[:,1]
     vz = set2[:,2]
-    result = numarray.zeros((len(set1), 3), set1.dtype.char)
+    result = np.zeros((len(set1), 3), set1.dtype.char)
     result[:,0] = (uy*vz)-(uz*vy)
     result[:,1] = (uz*vx)-(ux*vz)
     result[:,2] = (ux*vy)-(uy*vx)
@@ -35,17 +36,17 @@ def crossProduct4( set1, set2 ):
 
     Identical to crossProduct otherwise.
     """
-    set1 = numarray.asarray( set1, 'd')
-    set1 = numarray.reshape( set1, (-1, 4))
-    set2 = numarray.asarray( set2, 'd')
-    set2 = numarray.reshape( set2, (-1, 4))
+    set1 = np.asarray(set1, dtype='d')
+    set1 = np.reshape(set1, (-1, 4))
+    set2 = np.asarray(set2, dtype='d')
+    set2 = np.reshape(set2, (-1, 4))
     ux = set1[:,0]
     uy = set1[:,1]
     uz = set1[:,2]
     vx = set2[:,0]
     vy = set2[:,1]
     vz = set2[:,2]
-    result = numarray.zeros((len(set1), 4), set1.dtype.char)
+    result = np.zeros((len(set1), 4), set1.dtype.char)
     result[:,0] = (uy*vz)-(uz*vy)
     result[:,1] = (uz*vx)-(ux*vz)
     result[:,2] = (ux*vy)-(uy*vx)
@@ -61,15 +62,15 @@ def magnitude( vectors ):
     @return: a double array with x elements,
              where x is the number of 3-element vectors
     """
-    vectors = numarray.asarray( vectors,'d')
-    if not (len(numarray.shape(vectors))==2 and numarray.shape(vectors)[1] in (3,4)):
-        vectors = numarray.reshape( vectors, (-1,3))
+    vectors = np.asarray(vectors, dtype='d')
+    if not (len(np.shape(vectors)) == 2 and np.shape(vectors)[1] in (3, 4)):
+        vectors = np.reshape(vectors, (-1, 3))
     vectors = vectors*vectors
     # should just use sum?
     result = vectors[:,0]
-    numarray.add( result, vectors[:,1], result )
-    numarray.add( result, vectors[:,2], result )
-    numarray.sqrt( result, result )
+    np.add(result, vectors[:, 1], result)
+    np.add(result, vectors[:, 2], result)
+    np.sqrt(result, result)
     return result
     
 def normalise( vectors ):
@@ -84,16 +85,16 @@ def normalise( vectors ):
     @return: a double array with x 3-element vectors,
              where x is the number of 3-element vectors in "vectors"
     """
-    vectors = numarray.asarray( vectors, 'd')
-    vectors = numarray.reshape( vectors, (-1,3))
-    mags = numarray.reshape( magnitude( vectors ), (-1, 1))
+    vectors = np.asarray(vectors, dtype='d')
+    vectors = np.reshape(vectors, (-1, 3))
+    mags = np.reshape(magnitude(vectors), (-1, 1))
         
-    return numarray.divide( vectors, mags)
+    return np.divide(vectors, mags)
 
 
 if __name__ == "__main__":
     def test():
-        data = numarray.array( [
+        data = np.array([
                 [0,0,0],[1,0,0],[0,1,0],
                 [1,0,0],[0,0,0],[0,1,0],
         ],'d')
@@ -102,7 +103,7 @@ if __name__ == "__main__":
             normalise( data )
         except ZeroDivisionError:
             print('got zero div')
-        data = numarray.array( [
+        data = np.array([
                 [1,1,0],[1,0,0],[0,1,0],
                 [1,0,1],[0,1,1],[1,1,0],
         ],'d')

@@ -3,8 +3,11 @@ import copy
 import logging
 
 from OpenGL.GL import *
+from neveredit.util import Utils
 
 logger = logging.getLogger("neveredit.shader")
+Numeric = Utils.getNumPy()
+LinearAlgebra = Utils.getLinAlg()
 
 
 def _color_param(label, default):
@@ -58,11 +61,14 @@ SHADERS = {
 #version 120
 varying vec3 vNormal;
 varying vec2 vTexCoord;
+uniform mat4 uProjectionMatrix;
+uniform mat4 uModelViewMatrix;
+uniform mat3 uNormalMatrix;
 
 void main() {
-    vNormal = normalize(gl_NormalMatrix * gl_Normal);
+    vNormal = normalize(uNormalMatrix * gl_Normal);
     vTexCoord = gl_MultiTexCoord0.st;
-    gl_Position = gl_ProjectionMatrix * gl_ModelViewMatrix * gl_Vertex;
+    gl_Position = uProjectionMatrix * uModelViewMatrix * gl_Vertex;
 }
         ''',
         'fragment': '''
@@ -96,8 +102,11 @@ void main() {
         'description': 'True wireframe mode with configurable line width and tint.',
         'vertex': '''
 #version 120
+uniform mat4 uProjectionMatrix;
+uniform mat4 uModelViewMatrix;
+
 void main() {
-    gl_Position = gl_ProjectionMatrix * gl_ModelViewMatrix * gl_Vertex;
+    gl_Position = uProjectionMatrix * uModelViewMatrix * gl_Vertex;
 }
         ''',
         'fragment': '''
@@ -126,28 +135,47 @@ void main() {
 #version 120
 varying vec3 vColor;
 varying vec2 vTexCoord;
+uniform mat4 uProjectionMatrix;
+uniform mat4 uModelViewMatrix;
+uniform mat3 uNormalMatrix;
 uniform vec3 uBaseColor;
 uniform float uAmbientStrength;
 uniform float uDiffuseStrength;
 uniform float uSpecularStrength;
 uniform float uShininess;
 uniform int uColorDepth;
+uniform vec4 uSceneAmbient;
+uniform vec4 uSceneDiffuse;
+uniform vec4 uSceneSpecular;
+uniform vec4 uLightPosition;
+uniform vec3 uMaterialAmbient;
+uniform vec3 uMaterialDiffuse;
+uniform vec3 uMaterialSpecular;
+uniform float uMaterialShininess;
 
 void main() {
-    vec3 normal = normalize(gl_NormalMatrix * gl_Normal);
-    vec3 lightDir = normalize(vec3(0.9, 0.8, 1.0));
-    vec3 viewDir = vec3(0.0, 0.0, 1.0);
+    vec3 normal = normalize(uNormalMatrix * gl_Normal);
+    vec3 viewPos = (uModelViewMatrix * gl_Vertex).xyz;
+    vec3 lightDir = normalize(uLightPosition.xyz - viewPos);
+    vec3 viewDir = normalize(-viewPos);
     vec3 halfDir = normalize(lightDir + viewDir);
 
-    float ambient = uAmbientStrength;
-    float diffuse = max(dot(normal, lightDir), 0.0) * uDiffuseStrength;
-    float specular = pow(max(dot(normal, halfDir), 0.0), max(uShininess, 1.0)) * uSpecularStrength;
+    float diffuseFactor = max(dot(normal, lightDir), 0.0);
+    float matShininess = max(uMaterialShininess * (uShininess / 32.0), 1.0);
 
-    vec3 color = uBaseColor * (ambient + diffuse) + vec3(specular);
+    vec3 ambient = uSceneAmbient.rgb * uMaterialAmbient * uAmbientStrength;
+    vec3 diffuse = uSceneDiffuse.rgb * uMaterialDiffuse * diffuseFactor * uDiffuseStrength;
+    float specularFactor = 0.0;
+    if (diffuseFactor > 0.0) {
+        specularFactor = pow(max(dot(normal, halfDir), 0.0), matShininess);
+    }
+    vec3 specular = uSceneSpecular.rgb * uMaterialSpecular * specularFactor * uSpecularStrength;
+
+    vec3 color = uBaseColor * (ambient + diffuse) + specular;
     float levels = max(float(uColorDepth), 2.0);
     vColor = floor(clamp(color, 0.0, 1.0) * levels) / levels;
     vTexCoord = gl_MultiTexCoord0.st;
-    gl_Position = gl_ProjectionMatrix * gl_ModelViewMatrix * gl_Vertex;
+    gl_Position = uProjectionMatrix * uModelViewMatrix * gl_Vertex;
 }
         ''',
         'fragment': '''
@@ -180,12 +208,15 @@ void main() {
 varying vec3 vNormal;
 varying vec3 vPosition;
 varying vec2 vTexCoord;
+uniform mat4 uProjectionMatrix;
+uniform mat4 uModelViewMatrix;
+uniform mat3 uNormalMatrix;
 
 void main() {
-    vNormal = normalize(gl_NormalMatrix * gl_Normal);
-    vPosition = (gl_ModelViewMatrix * gl_Vertex).xyz;
+    vNormal = normalize(uNormalMatrix * gl_Normal);
+    vPosition = (uModelViewMatrix * gl_Vertex).xyz;
     vTexCoord = gl_MultiTexCoord0.st;
-    gl_Position = gl_ProjectionMatrix * gl_ModelViewMatrix * gl_Vertex;
+    gl_Position = uProjectionMatrix * uModelViewMatrix * gl_Vertex;
 }
         ''',
         'fragment': '''
@@ -201,18 +232,33 @@ uniform float uShininess;
 uniform int uColorDepth;
 uniform sampler2D uTexture;
 uniform float uTextureBlend;
+uniform vec4 uSceneAmbient;
+uniform vec4 uSceneDiffuse;
+uniform vec4 uSceneSpecular;
+uniform vec4 uLightPosition;
+uniform vec3 uMaterialAmbient;
+uniform vec3 uMaterialDiffuse;
+uniform vec3 uMaterialSpecular;
+uniform float uMaterialShininess;
 
 void main() {
     vec3 normal = normalize(vNormal);
-    vec3 lightDir = normalize(vec3(0.9, 0.9, 1.2) - vPosition);
+    vec3 lightDir = normalize(uLightPosition.xyz - vPosition);
     vec3 viewDir = normalize(-vPosition);
     vec3 halfDir = normalize(lightDir + viewDir);
 
-    float ambient = uAmbientStrength;
-    float diffuse = max(dot(normal, lightDir), 0.0) * uDiffuseStrength;
-    float specular = pow(max(dot(normal, halfDir), 0.0), max(uShininess, 1.0)) * uSpecularStrength;
+    float diffuseFactor = max(dot(normal, lightDir), 0.0);
+    float matShininess = max(uMaterialShininess * (uShininess / 32.0), 1.0);
+    float specularFactor = 0.0;
+    if (diffuseFactor > 0.0) {
+        specularFactor = pow(max(dot(normal, halfDir), 0.0), matShininess);
+    }
 
-    vec3 color = uBaseColor * (ambient + diffuse) + vec3(specular);
+    vec3 ambient = uSceneAmbient.rgb * uMaterialAmbient * uAmbientStrength;
+    vec3 diffuse = uSceneDiffuse.rgb * uMaterialDiffuse * diffuseFactor * uDiffuseStrength;
+    vec3 specular = uSceneSpecular.rgb * uMaterialSpecular * specularFactor * uSpecularStrength;
+
+    vec3 color = uBaseColor * (ambient + diffuse) + specular;
     float levels = max(float(uColorDepth), 2.0);
     color = floor(clamp(color, 0.0, 1.0) * levels) / levels;
     vec3 texColor = texture2D(uTexture, vTexCoord).rgb;
@@ -237,12 +283,15 @@ void main() {
 varying vec3 vNormal;
 varying vec3 vPosition;
 varying vec2 vTexCoord;
+uniform mat4 uProjectionMatrix;
+uniform mat4 uModelViewMatrix;
+uniform mat3 uNormalMatrix;
 
 void main() {
-    vNormal = normalize(gl_NormalMatrix * gl_Normal);
-    vPosition = (gl_ModelViewMatrix * gl_Vertex).xyz;
+    vNormal = normalize(uNormalMatrix * gl_Normal);
+    vPosition = (uModelViewMatrix * gl_Vertex).xyz;
     vTexCoord = gl_MultiTexCoord0.st;
-    gl_Position = gl_ProjectionMatrix * gl_ModelViewMatrix * gl_Vertex;
+    gl_Position = uProjectionMatrix * uModelViewMatrix * gl_Vertex;
 }
         ''',
         'fragment': '''
@@ -287,12 +336,15 @@ void main() {
 varying vec3 vNormal;
 varying vec3 vPosition;
 varying vec2 vTexCoord;
+uniform mat4 uProjectionMatrix;
+uniform mat4 uModelViewMatrix;
+uniform mat3 uNormalMatrix;
 
 void main() {
-    vNormal = normalize(gl_NormalMatrix * gl_Normal);
-    vPosition = (gl_ModelViewMatrix * gl_Vertex).xyz;
+    vNormal = normalize(uNormalMatrix * gl_Normal);
+    vPosition = (uModelViewMatrix * gl_Vertex).xyz;
     vTexCoord = gl_MultiTexCoord0.st;
-    gl_Position = gl_ProjectionMatrix * gl_ModelViewMatrix * gl_Vertex;
+    gl_Position = uProjectionMatrix * uModelViewMatrix * gl_Vertex;
 }
         ''',
         'fragment': '''
@@ -335,10 +387,12 @@ void main() {
         'vertex': '''
 #version 120
 varying vec2 vTexCoord;
+uniform mat4 uProjectionMatrix;
+uniform mat4 uModelViewMatrix;
 
 void main() {
     vTexCoord = gl_MultiTexCoord0.xy;
-    gl_Position = gl_ProjectionMatrix * gl_ModelViewMatrix * gl_Vertex;
+    gl_Position = uProjectionMatrix * uModelViewMatrix * gl_Vertex;
 }
         ''',
         'fragment': '''
@@ -368,12 +422,15 @@ void main() {
 varying vec3 vNormal;
 varying vec3 vPosition;
 varying vec2 vTexCoord;
+uniform mat4 uProjectionMatrix;
+uniform mat4 uModelViewMatrix;
+uniform mat3 uNormalMatrix;
 
 void main() {
-    vNormal = normalize(gl_NormalMatrix * gl_Normal);
-    vPosition = (gl_ModelViewMatrix * gl_Vertex).xyz;
+    vNormal = normalize(uNormalMatrix * gl_Normal);
+    vPosition = (uModelViewMatrix * gl_Vertex).xyz;
     vTexCoord = gl_MultiTexCoord0.st;
-    gl_Position = gl_ProjectionMatrix * gl_ModelViewMatrix * gl_Vertex;
+    gl_Position = uProjectionMatrix * uModelViewMatrix * gl_Vertex;
 }
         ''',
         'fragment': '''
@@ -519,6 +576,23 @@ class ShaderManager:
         self.current_shader = 'None'
         self.enabled_shaders = []
         self.parameter_values = {}
+        self.scene_light_state = {
+            'ambient': [0.2, 0.2, 0.2, 1.0],
+            'diffuse': [0.8, 0.8, 0.8, 1.0],
+            'specular': [1.0, 1.0, 1.0, 1.0],
+            'position': [0.0, 0.0, 1.0, 1.0],
+        }
+        self.material_state = {
+            'ambient': [0.2, 0.2, 0.2],
+            'diffuse': [0.8, 0.8, 0.8],
+            'specular': [1.0, 1.0, 1.0],
+            'shininess': 32.0,
+        }
+        self.matrix_state = {
+            'projection': Numeric.identity(4, Numeric.Float),
+            'model_view': Numeric.identity(4, Numeric.Float),
+            'normal': Numeric.identity(3, Numeric.Float),
+        }
         self._load_shaders()
         self.set_enabled_shaders(enabled_shaders)
         self.set_parameter_values(parameter_values or {})
@@ -566,6 +640,66 @@ class ShaderManager:
         if value_type == 'bool':
             return bool(value)
         return value if value is not None else default
+
+    def _normalize_vec3(self, value, default):
+        if not isinstance(value, (list, tuple)) or len(value) < 3:
+            return list(default)
+        normalized = []
+        for component in list(value)[:3]:
+            try:
+                normalized.append(float(component))
+            except (TypeError, ValueError):
+                normalized.append(float(default[len(normalized)]))
+        return normalized
+
+    def _normalize_vec4(self, value, default):
+        if not isinstance(value, (list, tuple)) or len(value) < 4:
+            return list(default)
+        normalized = []
+        for component in list(value)[:4]:
+            try:
+                normalized.append(float(component))
+            except (TypeError, ValueError):
+                normalized.append(float(default[len(normalized)]))
+        return normalized
+
+    def set_scene_lighting(self, ambient=None, diffuse=None, specular=None, position=None):
+        if ambient is not None:
+            self.scene_light_state['ambient'] = self._normalize_vec4(ambient, self.scene_light_state['ambient'])
+        if diffuse is not None:
+            self.scene_light_state['diffuse'] = self._normalize_vec4(diffuse, self.scene_light_state['diffuse'])
+        if specular is not None:
+            self.scene_light_state['specular'] = self._normalize_vec4(specular, self.scene_light_state['specular'])
+        if position is not None:
+            self.scene_light_state['position'] = self._normalize_vec4(position, self.scene_light_state['position'])
+
+    def set_material_state(self, ambient=None, diffuse=None, specular=None, shininess=None):
+        if ambient is not None:
+            self.material_state['ambient'] = self._normalize_vec3(ambient, self.material_state['ambient'])
+        if diffuse is not None:
+            self.material_state['diffuse'] = self._normalize_vec3(diffuse, self.material_state['diffuse'])
+        if specular is not None:
+            self.material_state['specular'] = self._normalize_vec3(specular, self.material_state['specular'])
+        if shininess is not None:
+            try:
+                self.material_state['shininess'] = float(shininess)
+            except (TypeError, ValueError):
+                pass
+
+    def sync_matrix_state_from_gl(self):
+        try:
+            projection = Numeric.array(glGetFloatv(GL_PROJECTION_MATRIX), Numeric.Float)
+            model_view = Numeric.array(glGetFloatv(GL_MODELVIEW_MATRIX), Numeric.Float)
+            try:
+                normal = LinearAlgebra.inverse(model_view[:3, :3]).transpose()
+            except Exception:
+                normal = Numeric.identity(3, Numeric.Float)
+
+            self.matrix_state['projection'] = projection
+            self.matrix_state['model_view'] = model_view
+            self.matrix_state['normal'] = Numeric.array(normal, Numeric.Float)
+        except Exception:
+            return
 
     def compile_all(self):
         success = True
@@ -685,6 +819,27 @@ class ShaderManager:
         texture_loc = shader.get_uniform_location('uTexture')
         if texture_loc >= 0:
             glUniform1i(texture_loc, 0)
+
+        projection_loc = shader.get_uniform_location('uProjectionMatrix')
+        if projection_loc >= 0:
+            glUniformMatrix4fv(projection_loc, 1, GL_FALSE, self.matrix_state['projection'])
+        model_view_loc = shader.get_uniform_location('uModelViewMatrix')
+        if model_view_loc >= 0:
+            glUniformMatrix4fv(model_view_loc, 1, GL_FALSE, self.matrix_state['model_view'])
+        normal_loc = shader.get_uniform_location('uNormalMatrix')
+        if normal_loc >= 0:
+            glUniformMatrix3fv(normal_loc, 1, GL_FALSE, self.matrix_state['normal'])
+
+        # Runtime scene/material uniforms used by modernized shaders.
+        self._apply_uniform(shader, 'uSceneAmbient', self.scene_light_state['ambient'])
+        self._apply_uniform(shader, 'uSceneDiffuse', self.scene_light_state['diffuse'])
+        self._apply_uniform(shader, 'uSceneSpecular', self.scene_light_state['specular'])
+        self._apply_uniform(shader, 'uLightPosition', self.scene_light_state['position'])
+        self._apply_uniform(shader, 'uMaterialAmbient', self.material_state['ambient'])
+        self._apply_uniform(shader, 'uMaterialDiffuse', self.material_state['diffuse'])
+        self._apply_uniform(shader, 'uMaterialSpecular', self.material_state['specular'])
+        self._apply_uniform(shader, 'uMaterialShininess', self.material_state['shininess'])
+
         shader_def = SHADERS.get(shader_key, {})
         for param_key, param_def in shader_def.get('parameters', {}).items():
             uniform_name = param_def.get('uniform')

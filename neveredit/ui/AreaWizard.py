@@ -102,6 +102,7 @@ class AreaWizard(wx.adv.Wizard):
             'tileset': '',
             'width': 8,
             'height': 8,
+            'generate_border_scene_life': True,
             'launch_area_properties': False,
             'open_area_viewer': True,
         }
@@ -224,10 +225,15 @@ class AreaWizard(wx.adv.Wizard):
         self.launch_props_check = wx.CheckBox(
             self.page_finish,
             label='Launch Area Properties Dialog')
+        self.scene_life_check = wx.CheckBox(
+            self.page_finish,
+            label='Generate perimeter scene life (exterior areas)')
         self.open_viewer_check = wx.CheckBox(
             self.page_finish,
             label='Open Area in the Area Viewer')
+        self.scene_life_check.SetValue(True)
         self.open_viewer_check.SetValue(True)
+        outer.Add(self.scene_life_check, 0, wx.LEFT | wx.RIGHT | wx.TOP, 8)
         outer.Add(self.launch_props_check, 0, wx.LEFT | wx.RIGHT | wx.TOP, 8)
         outer.Add(self.open_viewer_check, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 8)
         self.page_finish.SetSizer(outer)
@@ -316,6 +322,7 @@ class AreaWizard(wx.adv.Wizard):
         event.Skip()
 
     def _on_wizard_finished(self, event):
+        self.state['generate_border_scene_life'] = bool(self.scene_life_check.GetValue())
         self.state['launch_area_properties'] = bool(self.launch_props_check.GetValue())
         self.state['open_area_viewer'] = bool(self.open_viewer_check.GetValue())
         self._completed = True
@@ -330,6 +337,8 @@ class AreaWizard(wx.adv.Wizard):
             'ResRef: %s' % self.state.get('resref', ''),
             'Tileset: %s' % self.state.get('tileset', ''),
             'Size: %sx%s' % (self.state.get('width', 0), self.state.get('height', 0)),
+            'Perimeter scene life: %s' % (
+                'Enabled' if self.state.get('generate_border_scene_life', True) else 'Disabled'),
         ]
         self.finish_summary.SetLabel('\n'.join(lines))
         self.page_finish.Layout()
@@ -412,7 +421,18 @@ class AreaWizard(wx.adv.Wizard):
                 try:
                     if tileset.has_option(section, key):
                         value = tileset.get(section, key).strip()
-                        if value:
+                        if not value:
+                            continue
+                        # NWN SET files store DisplayName as a TLK StrRef integer.
+                        # Resolve it through the talk table when it looks numeric.
+                        try:
+                            strref = int(value)
+                            tlk_name = rm.getDialogString(strref)
+                            if tlk_name and tlk_name.strip():
+                                meta['display_name'] = tlk_name.strip()
+                                return meta
+                        except (ValueError, TypeError):
+                            # Not a StrRef – use the raw text as-is.
                             meta['display_name'] = value
                             return meta
                 except Exception:
